@@ -1,7 +1,27 @@
 {
     "traj_loc_pred": {
-        "allowed_model": ["DeepMove", "RNN", "LSTM", "GRU", "FPMC", "LSTPM", "STRNN", "SERM", "TemplateTLP", "ATSTLSTM", "HSTLSTM", "STAN", "CARA", "GeoSAN"],
-        "allowed_dataset": ["foursquare_tky", "foursquare_nyc", "gowalla", "foursquare_serm"],
+        "allowed_model": [
+            "DeepMove",
+            "RNN",
+            "LSTM",
+            "GRU",
+            "FPMC",
+            "LSTPM",
+            "STRNN",
+            "SERM",
+            "TemplateTLP",
+            "ATSTLSTM",
+            "HSTLSTM",
+            "STAN",
+            "CARA",
+            "GeoSAN"
+        ],
+        "allowed_dataset": [
+            "foursquare_tky",
+            "foursquare_nyc",
+            "gowalla",
+            "foursquare_serm"
+        ],
         "GeoSAN": {
             "dataset_class": "GeoSANDataset",
             "executor": "GeoSANExecutor",
@@ -83,24 +103,123 @@
     },
     "traffic_state_pred": {
         "allowed_model": [
-            "DCRNN", "STGCN", "GWNET", "AGCRN", "TGCLSTM", "TGCN", "TemplateTSP",
-            "ASTGCN", "MSTGCN", "MTGNN", "ACFM", "STResNet", "RNN", "LSTM", "GRU", "AutoEncoder", "Seq2Seq",
-            "STResNetCommon", "ACFMCommon", "ASTGCNCommon", "MSTGCNCommon", "ToGCN", "CONVGCN", "STG2Seq",
-            "DMVSTNet", "ATDM", "GMAN", "GTS", "STDN", "HGCN", "STSGCN", "STAGGCN", "STNN", "ResLSTM", "DGCN",
-            "MultiSTGCnet", "STMGAT", "CRANN", "STTN", "CONVGCNCommon", "DSAN", "DKFN", "CCRNN", "MultiSTGCnetCommon",
-            "GEML", "FNN", "GSNet", "CSTN", "D2STGNN", "STID","STGODE", "STNorm", "DMSTGCN", "ESG", "SSTBAN", "STTSNet",
-            "FOGS", "RGSL", "DSTAGNN", "STPGCN", "HIEST", "STAEformer", "TESTAM", "MultiSPANS", "SimST", "TimeMixer",
-            "MegaCRN", "Trafformer", "STSSL", "STWave",  "PDFormer", "STGNCDE", "ASTGNN", "ASTGNNCommon", "FreTS"
+            "DCRNN",
+            "STGCN",
+            "GWNET",
+            "AGCRN",
+            "TGCLSTM",
+            "TGCN",
+            "TemplateTSP",
+            "ASTGCN",
+            "MSTGCN",
+            "MTGNN",
+            "ACFM",
+            "STResNet",
+            "RNN",
+            "LSTM",
+            "GRU",
+            "AutoEncoder",
+            "Seq2Seq",
+            "STResNetCommon",
+            "ACFMCommon",
+            "ASTGCNCommon",
+            "MSTGCNCommon",
+            "ToGCN",
+            "CONVGCN",
+            "STG2Seq",
+            "DMVSTNet",
+            "ATDM",
+            "GMAN",
+            "GTS",
+            "STDN",
+            "HGCN",
+            "STSGCN",
+            "STAGGCN",
+            "STNN",
+            "ResLSTM",
+            "DGCN",
+            "MultiSTGCnet",
+            "STMGAT",
+            "CRANN",
+            "STTN",
+            "CONVGCNCommon",
+            "DSAN",
+            "DKFN",
+            "CCRNN",
+            "MultiSTGCnetCommon",
+            "GEML",
+            "FNN",
+            "GSNet",
+            "CSTN",
+            "D2STGNN",
+            "STID",
+            "STGODE",
+            "STNorm",
+            "DMSTGCN",
+            "ESG",
+            "SSTBAN",
+            "STTSNet",
+            "FOGS",
+            "RGSL",
+            "DSTAGNN",
+            "STPGCN",
+            "HIEST",
+            "STAEformer",
+            "TESTAM",
+            "MultiSPANS",
+            "SimST",
+            "TimeMixer",
+            "MegaCRN",
+            "Trafformer",
+            "STSSL",
+            "STWave",
+            "PDFormer",
+            "STGNCDE",
+            "ASTGNN",
+            "ASTGNNCommon",
+            "FreTS",
+            "Mamba"
         ],
         "allowed_dataset": [
-            "METR_LA", "PEMS_BAY", "PEMSD3", "PEMSD4", "PEMSD7", "PEMSD8", "PEMSD7(M)",
-            "LOOP_SEATTLE", "LOS_LOOP", "LOS_LOOP_SMALL", "Q_TRAFFIC", "SZ_TAXI",
-            "NYCBike20140409", "NYCBike20160708", "NYCBike20160809", "NYCTaxi20140112",
-            "NYCTaxi20150103", "NYCTaxi20160102", "TAXIBJ", "T_DRIVE20150206",
-            "BEIJING_SUBWAY_10MIN", "BEIJING_SUBWAY_15MIN", "BEIJING_SUBWAY_30MIN",
-            "ROTTERDAM", "HZMETRO", "SHMETRO", "M_DENSE", "PORTO", "NYCTAXI_DYNA",
-            "NYCTAXI_OD", "NYCTAXI_GRID", "T_DRIVE_SMALL", "NYCBIKE", "AUSTINRIDE",
-            "BIKEDC", "BIKECHI", "NYC_RISK", "CHICAGO_RISK", "NYCTAXI20140112_FLOW"
+            "METR_LA",
+            "PEMS_BAY",
+            "PEMSD3",
+            "PEMSD4",
+            "PEMSD7",
+            "PEMSD8",
+            "PEMSD7(M)",
+            "LOOP_SEATTLE",
+            "LOS_LOOP",
+            "LOS_LOOP_SMALL",
+            "Q_TRAFFIC",
+            "SZ_TAXI",
+            "NYCBike20140409",
+            "NYCBike20160708",
+            "NYCBike20160809",
+            "NYCTaxi20140112",
+            "NYCTaxi20150103",
+            "NYCTaxi20160102",
+            "TAXIBJ",
+            "T_DRIVE20150206",
+            "BEIJING_SUBWAY_10MIN",
+            "BEIJING_SUBWAY_15MIN",
+            "BEIJING_SUBWAY_30MIN",
+            "ROTTERDAM",
+            "HZMETRO",
+            "SHMETRO",
+            "M_DENSE",
+            "PORTO",
+            "NYCTAXI_DYNA",
+            "NYCTAXI_OD",
+            "NYCTAXI_GRID",
+            "T_DRIVE_SMALL",
+            "NYCBIKE",
+            "AUSTINRIDE",
+            "BIKEDC",
+            "BIKECHI",
+            "NYC_RISK",
+            "CHICAGO_RISK",
+            "NYCTAXI20140112_FLOW"
         ],
         "FreTS": {
             "dataset_class": "TrafficStatePointDataset",
@@ -476,14 +595,21 @@
             "dataset_class": "TrafficStatePointDataset",
             "executor": "TrafficStateExecutor",
             "evaluator": "TrafficStateEvaluator"
+        },
+        "Mamba": {
+            "dataset_class": "TrafficStatePointDataset",
+            "executor": "TrafficStateExecutor",
+            "evaluator": "TrafficStateEvaluator"
         }
     },
     "eta": {
         "allowed_model": [
-            "DeepTTE", "TTPNet"
+            "DeepTTE",
+            "TTPNet"
         ],
         "allowed_dataset": [
-            "Chengdu_Taxi_Sample1", "Beijing_Taxi_Sample"
+            "Chengdu_Taxi_Sample1",
+            "Beijing_Taxi_Sample"
         ],
         "DeepTTE": {
             "dataset_class": "ETADataset",
@@ -500,10 +626,13 @@
     },
     "map_matching": {
         "allowed_model": [
-            "STMatching", "IVMM", "HMMM"
+            "STMatching",
+            "IVMM",
+            "HMMM"
         ],
         "allowed_dataset": [
-            "global", "Seattle"
+            "global",
+            "Seattle"
         ],
         "STMatching": {
             "dataset_class": "MapMatchingDataset",
@@ -523,7 +652,12 @@
     },
     "road_representation": {
         "allowed_model": [
-            "ChebConv", "LINE", "GAT", "Node2Vec", "DeepWalk", "GeomGCN"
+            "ChebConv",
+            "LINE",
+            "GAT",
+            "Node2Vec",
+            "DeepWalk",
+            "GeomGCN"
         ],
         "allowed_dataset": [
             "BJ_roadmap"

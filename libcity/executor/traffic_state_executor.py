@@ -9,6 +9,7 @@ from libcity.executor.abstract_executor import AbstractExecutor
 from libcity.utils import get_evaluator, ensure_dir
 from libcity.model import loss
 from functools import partial
+import matplotlib.pyplot as plt
 
 
 class TrafficStateExecutor(AbstractExecutor):
@@ -23,9 +24,11 @@ class TrafficStateExecutor(AbstractExecutor):
         self.cache_dir = './libcity/cache/{}/model_cache'.format(self.exp_id)
         self.evaluate_res_dir = './libcity/cache/{}/evaluate_cache'.format(self.exp_id)
         self.summary_writer_dir = './libcity/cache/{}/'.format(self.exp_id)
+        self.visualization_dir = './libcity/cache/{}/visualization'.format(self.exp_id)
         ensure_dir(self.cache_dir)
         ensure_dir(self.evaluate_res_dir)
         ensure_dir(self.summary_writer_dir)
+        ensure_dir(self.visualization_dir)
 
         self._writer = SummaryWriter(self.summary_writer_dir)
         self._logger = getLogger()
@@ -242,7 +245,7 @@ class TrafficStateExecutor(AbstractExecutor):
 
     def evaluate(self, test_dataloader):
         """
-        use model to test data
+        use model to test data and save visualizations
 
         Args:
             test_dataloader(torch.Dataloader): Dataloader
@@ -250,14 +253,19 @@ class TrafficStateExecutor(AbstractExecutor):
         self._logger.info('Start evaluating ...')
         with torch.no_grad():
             self.model.eval()
-            # self.evaluator.clear()
             y_truths = []
             y_preds = []
-            for batch in test_dataloader:
+            for batch_idx, batch in enumerate(test_dataloader):
                 batch.to_tensor(self.device)
                 output = self.model.predict(batch)
                 y_true = self._scaler.inverse_transform(batch['y'][..., :self.output_dim])
                 y_pred = self._scaler.inverse_transform(output[..., :self.output_dim])
+                
+                # Save visualizations for this batch
+                self.visualize_predictions(y_true.cpu().numpy(), 
+                                        y_pred.cpu().numpy(), 
+                                        batch_idx)
+                
                 y_truths.append(y_true.cpu().numpy())
                 y_preds.append(y_pred.cpu().numpy())
                 # evaluate_input = {'y_true': y_true, 'y_pred': y_pred}
@@ -274,6 +282,49 @@ class TrafficStateExecutor(AbstractExecutor):
             self.evaluator.collect({'y_true': torch.tensor(y_truths), 'y_pred': torch.tensor(y_preds)})
             test_result = self.evaluator.save_result(self.evaluate_res_dir)
             return test_result
+
+    def visualize_predictions(self, y_true, y_pred, batch_idx):
+        """
+        Create and save visualizations for predictions vs ground truth for one random sample per batch
+
+        Args:
+            y_true (numpy.ndarray): Ground truth values shape (batch_size, timesteps, nodes, metrics)
+            y_pred (numpy.ndarray): Predicted values shape (batch_size, timesteps, nodes, metrics)
+            batch_idx (int): Batch index for filename
+        """
+        # Select one random sample from the batch
+        sample_idx = np.random.randint(0, y_true.shape[0])
+        # Select one random node
+        node_idx = np.random.randint(0, y_true.shape[2])
+        
+        # Create one plot with all 3 features
+        plt.figure(figsize=(15, 5))
+        
+        # Get the data for the selected sample and node
+        true_sample = y_true[sample_idx, :, node_idx, :]  # shape (timesteps, metrics)
+        pred_sample = y_pred[sample_idx, :, node_idx, :]  # shape (timesteps, metrics)
+        
+        feature_names = ['Traffic Flow', 'Traffic Occupancy', 'Traffic Speed']
+        
+        # Plot each metric
+        for metric_idx in range(3):
+            plt.subplot(1, 3, metric_idx + 1)
+            plt.plot(true_sample[:, metric_idx], label='Ground Truth', marker='o')
+            plt.plot(pred_sample[:, metric_idx], label='Prediction', marker='x')
+            plt.title(f'{feature_names[metric_idx]}\nNode {node_idx}')
+            plt.xlabel('Time Step')
+            plt.ylabel('Value')
+            plt.legend()
+            plt.grid(True)
+        
+        plt.tight_layout()
+        # Save the figure
+        filename = f'batch_{batch_idx}_sample_{sample_idx}_node_{node_idx}.png'
+        plt.savefig(os.path.join(self.visualization_dir, filename))
+        plt.close()
+        
+        if batch_idx % 10 == 0:  # Log every 10 batches
+            self._logger.info(f'Saved visualizations for batch {batch_idx}')
 
     def train(self, train_dataloader, eval_dataloader):
         """

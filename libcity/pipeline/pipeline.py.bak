@@ -1,10 +1,10 @@
 import os
-# from ray import tune # Commented out to avoid ray dependency
-# from ray.tune.suggest.hyperopt import HyperOptSearch # Commented out to avoid ray dependency
-# from ray.tune.suggest.bayesopt import BayesOptSearch # Commented out to avoid ray dependency
-# from ray.tune.suggest.basic_variant import BasicVariantGenerator # Commented out to avoid ray dependency
-# from ray.tune.schedulers import FIFOScheduler, ASHAScheduler, MedianStoppingRule # Commented out to avoid ray dependency
-# from ray.tune.suggest import ConcurrencyLimiter # Commented out to avoid ray dependency
+from ray import tune
+from ray.tune.suggest.hyperopt import HyperOptSearch
+from ray.tune.suggest.bayesopt import BayesOptSearch
+from ray.tune.suggest.basic_variant import BasicVariantGenerator
+from ray.tune.schedulers import FIFOScheduler, ASHAScheduler, MedianStoppingRule
+from ray.tune.suggest import ConcurrencyLimiter
 import json
 import torch
 import random

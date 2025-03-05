@@ -1,0 +1,9 @@
+{
+    "d_model": 64,
+    "d_state": 16,
+    "max_epoch": 100,
+    "learner": "adam",
+    "learning_rate": 0.001,
+    "input_window": 12,
+    "output_window": 12
+}
