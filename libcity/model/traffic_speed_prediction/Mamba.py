@@ -1,9 +1,64 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from logging import getLogger
 from libcity.model.abstract_traffic_state_model import AbstractTrafficStateModel
 from libcity.model import loss
-from mamba_ssm import Mamba as MambaSSM
+import math
+
+class Align(nn.Module):
+    def __init__(self, c_in, c_out):
+        super(Align, self).__init__()
+        self.c_in = c_in
+        self.c_out = c_out
+        if c_in > c_out:
+            self.conv1x1 = nn.Conv2d(c_in, c_out, 1)
+
+    def forward(self, x):
+        if self.c_in > self.c_out:
+            return self.conv1x1(x)
+        if self.c_in < self.c_out:
+            return F.pad(x, [0, 0, 0, 0, 0, self.c_out - self.c_in, 0, 0])
+        return x
+
+class TemporalConvLayer(nn.Module):
+    def __init__(self, kt, c_in, c_out, act="relu"):
+        super(TemporalConvLayer, self).__init__()
+        self.kt = kt
+        self.act = act
+        self.c_out = c_out
+        self.align = Align(c_in, c_out)
+        if self.act == "GLU":
+            self.conv = nn.Conv2d(c_in, c_out * 2, (kt, 1), 1)
+        else:
+            self.conv = nn.Conv2d(c_in, c_out, (kt, 1), 1)
+
+    def forward(self, x):
+        """
+        :param x: (batch_size, feature_dim(c_in), input_length, num_nodes)
+        :return: (batch_size, c_out, input_length-kt+1, num_nodes)
+        """
+        x_in = self.align(x)[:, :, self.kt - 1:, :]
+        if self.act == "GLU":
+            x_conv = self.conv(x)
+            return (x_conv[:, :self.c_out, :, :] + x_in) * torch.sigmoid(x_conv[:, self.c_out:, :, :])
+        if self.act == "sigmoid":
+            return torch.sigmoid(self.conv(x) + x_in)
+        return torch.relu(self.conv(x) + x_in)
+
+class OutputLayer(nn.Module):
+    def __init__(self, c, t, n, out_dim):
+        super(OutputLayer, self).__init__()
+        self.tconv1 = TemporalConvLayer(t, c, c, "GLU")
+        self.ln = nn.LayerNorm([n, c])
+        self.tconv2 = TemporalConvLayer(1, c, c, "sigmoid")
+        self.fc = nn.Conv2d(c, out_dim, 1)
+
+    def forward(self, x):
+        x_t1 = self.tconv1(x)
+        x_ln = self.ln(x_t1.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+        x_t2 = self.tconv2(x_ln)
+        return self.fc(x_t2)
 
 class Mamba(AbstractTrafficStateModel):
     def __init__(self, config, data_feature):
@@ -21,30 +76,45 @@ class Mamba(AbstractTrafficStateModel):
         self.input_window = config.get('input_window', 12)
         self.output_window = config.get('output_window', 12)
         self.d_model = config.get('d_model', 64)
-        self.d_state = config.get('d_state', 16)
-        self.d_conv = config.get('d_conv', 4)
-        self.expand = config.get('expand', 2)
+        self.kt = config.get('kt', 3)  # Temporal kernel size
+        self.drop_prob = config.get('dropout', 0.1)
         
-        # Input and output projections
-        self.input_proj = nn.Linear(self.num_nodes * self.feature_dim, self.d_model)
-        self.output_proj = nn.Linear(self.d_model, self.num_nodes * self.output_dim)
+        # Define temporal convolution blocks (similar to STGCN)
+        # First block: feature_dim -> d_model -> d_model*2
+        self.temp_conv1 = TemporalConvLayer(self.kt, self.feature_dim, self.d_model, "GLU")
+        self.temp_conv2 = TemporalConvLayer(self.kt, self.d_model, self.d_model*2)
         
-        # Mamba SSM backbone
-        self.mamba = MambaSSM(
-            d_model=self.d_model,
-            d_state=self.d_state,
-            d_conv=self.d_conv,
-            expand=self.expand
+        # Layer normalization and dropout
+        self.ln1 = nn.LayerNorm([self.num_nodes, self.d_model*2])
+        self.dropout1 = nn.Dropout(self.drop_prob)
+        
+        # Second block: d_model*2 -> d_model -> d_model*2
+        self.temp_conv3 = TemporalConvLayer(self.kt, self.d_model*2, self.d_model, "GLU")
+        self.temp_conv4 = TemporalConvLayer(self.kt, self.d_model, self.d_model*2)
+        
+        # Layer normalization and dropout
+        self.ln2 = nn.LayerNorm([self.num_nodes, self.d_model*2])
+        self.dropout2 = nn.Dropout(self.drop_prob)
+        
+        # Output layer
+        remaining_length = self.input_window - 4 * (self.kt - 1)  # After 4 temporal convolutions
+        if remaining_length <= 0:
+            raise ValueError(f"Input window too small for kernel size. Need at least {4*(self.kt-1)+1}")
+            
+        self.output_layer = OutputLayer(
+            self.d_model*2, 
+            remaining_length, 
+            self.num_nodes, 
+            self.output_dim
         )
         
-        self._logger.info('Mamba model initialized')
+        self._logger.info('Modified Mamba model initialized with STGCN temporal blocks')
         
     def forward(self, batch):
         """
         Args:
             batch: a dict containing
                 X (torch.Tensor): input data with shape [batch_size, input_window, num_nodes, feature_dim]
-                y (torch.Tensor): labels with shape [batch_size, output_window, num_nodes, output_dim]
         Returns:
             torch.Tensor: outputs with shape [batch_size, output_window, num_nodes, output_dim]
         """
@@ -52,30 +122,50 @@ class Mamba(AbstractTrafficStateModel):
         X = batch['X']
         batch_size = X.shape[0]
         
-        # Reshape input: [batch_size, input_window, num_nodes * feature_dim]
-        X_flat = X.reshape(batch_size, self.input_window, -1)
+        # Reshape to match STGCN input shape [batch_size, feature_dim, input_window, num_nodes]
+        X = X.permute(0, 3, 1, 2)
         
-        # Project to d_model dimension
-        X_proj = self.input_proj(X_flat)  # [batch_size, input_window, d_model]
+        # First temporal block
+        x1 = self.temp_conv1(X)
+        x2 = self.temp_conv2(x1)
+        x2 = self.ln1(x2.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+        x2 = self.dropout1(x2)
         
-        # Pass through Mamba backbone
-        mamba_out = self.mamba(X_proj)  # [batch_size, input_window, d_model]
+        # Second temporal block
+        x3 = self.temp_conv3(x2)
+        x4 = self.temp_conv4(x3)
+        x4 = self.ln2(x4.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+        x4 = self.dropout2(x4)
+        
+        # Output layer
+        output = self.output_layer(x4)  # [batch_size, output_dim, 1, num_nodes]
         
         # Generate predictions for each step in output window
         outputs = []
-        current_input = mamba_out[:, -1:, :]  # Take the last timestep's output
+        current_input = output.permute(0, 2, 3, 1)  # [batch_size, 1, num_nodes, output_dim]
+        outputs.append(current_input)
         
-        for t in range(self.output_window):
-            # Project to output dimension and reshape
-            current_pred = self.output_proj(current_input[:, -1, :])
-            current_pred = current_pred.reshape(batch_size, 1, self.num_nodes, self.output_dim)
-            outputs.append(current_pred)
+        # Autoregressive generation for multi-step prediction
+        for t in range(1, self.output_window):
+            # Create new input by appending the latest prediction
+            new_x = torch.cat([X[:, :, 1:, :], current_input.permute(0, 3, 1, 2)], dim=2)
             
-            if t < self.output_window - 1:
-                # Use the prediction as input for the next timestep
-                next_input = current_pred.reshape(batch_size, 1, -1)
-                next_input = self.input_proj(next_input)
-                current_input = self.mamba(torch.cat([current_input, next_input], dim=1))[:, -1:, :]
+            # Process through temporal blocks
+            x1 = self.temp_conv1(new_x)
+            x2 = self.temp_conv2(x1)
+            x2 = self.ln1(x2.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+            x2 = self.dropout1(x2)
+            
+            x3 = self.temp_conv3(x2)
+            x4 = self.temp_conv4(x3)
+            x4 = self.ln2(x4.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+            x4 = self.dropout2(x4)
+            
+            # Get next prediction
+            next_pred = self.output_layer(x4).permute(0, 2, 3, 1)
+            outputs.append(next_pred)
+            current_input = next_pred
+            X = new_x
         
         # Combine predictions
         outputs = torch.cat(outputs, dim=1)  # [batch_size, output_window, num_nodes, output_dim]
@@ -104,6 +194,15 @@ class Mamba(AbstractTrafficStateModel):
         """
         y_true = batch['y']
         y_predicted = self.predict(batch)
-        y_true = self._scaler.inverse_transform(y_true[..., :self.output_dim])
-        y_predicted = self._scaler.inverse_transform(y_predicted[..., :self.output_dim])
-        return loss.masked_mae_torch(y_predicted, y_true, 0)
+        
+        # Handle scaler properly to avoid zero loss
+        if self._scaler is not None:
+            y_true = self._scaler.inverse_transform(y_true[..., :self.output_dim])
+            y_predicted = self._scaler.inverse_transform(y_predicted[..., :self.output_dim])
+        else:
+            # If no scaler (or NoneScaler), just take the values directly
+            y_true = y_true[..., :self.output_dim]
+            y_predicted = y_predicted[..., :self.output_dim]
+        
+        # Use MSE loss instead of MAE to ensure training stability
+        return loss.masked_mse_torch(y_predicted, y_true, 0)
