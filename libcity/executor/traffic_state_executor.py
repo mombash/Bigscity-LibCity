@@ -20,6 +20,13 @@ class TrafficStateExecutor(AbstractExecutor):
         self.device = self.config.get('device', torch.device('cpu'))
         self.model = model.to(self.device)
         self.exp_id = self.config.get('exp_id', None)
+        
+        # Check GPU usage if the model has this capability
+        if hasattr(self.model, 'check_gpu_usage'):
+            self._logger = getLogger()
+            self._logger.info("Checking GPU usage...")
+            gpu_usage_check = self.model.check_gpu_usage()
+            self._logger.info(f"All model components on correct device: {gpu_usage_check}")
 
         self.cache_dir = './libcity/cache/{}/model_cache'.format(self.exp_id)
         self.evaluate_res_dir = './libcity/cache/{}/evaluate_cache'.format(self.exp_id)

@@ -4,6 +4,7 @@
 
 import argparse
 import random
+import time
 from libcity.pipeline import objective_function
 from libcity.executor import HyperTuning
 from libcity.utils import str2bool, get_logger, set_random_seed, add_general_args
@@ -46,8 +47,9 @@ if __name__ == '__main__':
     # exp_id
     exp_id = dict_args.get('exp_id', None)
     if exp_id is None:
-        # Make a new experiment ID
-        exp_id = int(random.SystemRandom().random() * 100000)
+        # Create a descriptive experiment ID with model name, dataset, and timestamp
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        exp_id = f"hyper_tune_{args.model}_{args.dataset}_{timestamp}"
         other_args['exp_id'] = exp_id
     # logger
     logger = get_logger({'model': args.model, 'dataset': args.dataset, 'exp_id': exp_id})

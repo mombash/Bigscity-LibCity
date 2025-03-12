@@ -11,6 +11,7 @@ import random
 from libcity.config import ConfigParser
 from libcity.data import get_dataset
 from libcity.utils import get_executor, get_model, get_logger, ensure_dir, set_random_seed
+import time
 
 
 def run_model(task=None, model_name=None, dataset_name=None, config_file=None,
@@ -31,8 +32,9 @@ def run_model(task=None, model_name=None, dataset_name=None, config_file=None,
                           config_file, saved_model, train, other_args)
     exp_id = config.get('exp_id', None)
     if exp_id is None:
-        # Make a new experiment ID
-        exp_id = int(random.SystemRandom().random() * 100000)
+        # Create a descriptive experiment ID with model name, dataset, and timestamp
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        exp_id = f"{model_name}_{dataset_name}_{timestamp}"
         config['exp_id'] = exp_id
     # logger
     logger = get_logger(config)
@@ -139,7 +141,9 @@ def hyper_parameter(task=None, model_name=None, dataset_name=None, config_file=N
     # exp_id
     exp_id = experiment_config.get('exp_id', None)
     if exp_id is None:
-        exp_id = int(random.SystemRandom().random() * 100000)
+        # Create a descriptive experiment ID with model name, dataset, and timestamp
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        exp_id = f"hyper_{model_name}_{dataset_name}_{timestamp}"
         experiment_config['exp_id'] = exp_id
     # logger
     logger = get_logger(experiment_config)
@@ -175,7 +179,11 @@ def hyper_parameter(task=None, model_name=None, dataset_name=None, config_file=N
         experiment_config['hyper_tune'] = True
         logger = get_logger(experiment_config)
         # exp_id
-        exp_id = int(random.SystemRandom().random() * 100000)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        task = experiment_config.get('task', 'unknown')
+        model_name = experiment_config.get('model', 'unknown')
+        dataset_name = experiment_config.get('dataset', 'unknown')
+        exp_id = f"hyper_trial_{model_name}_{dataset_name}_{timestamp}"
         experiment_config['exp_id'] = exp_id
         logger.info('Begin pipeline, task={}, model_name={}, dataset_name={}, exp_id={}'.
                     format(str(task), str(model_name), str(dataset_name), str(exp_id)))
@@ -233,8 +241,32 @@ def hyper_parameter(task=None, model_name=None, dataset_name=None, config_file=N
 
 def objective_function(task=None, model_name=None, dataset_name=None, config_file=None,
                        saved_model=True, train=True, other_args=None, hyper_config_dict=None):
+    """
+    Args:
+        task(str): task name
+        model_name(str): model name
+        dataset_name(str): dataset name
+        config_file(str): config filename used to modify the pipeline's
+            settings. the config file should be json.
+        saved_model(bool): whether to save the model
+        train(bool): whether to train the model
+        other_args(dict): the rest parameter args, which will be pass to the Config
+        hyper_config_dict(dict): the dict of hyperparameter combinatio
+    """
+    if other_args is None:
+        other_args = {}
+    if hyper_config_dict is not None:
+        other_args.update(hyper_config_dict)
     config = ConfigParser(task, model_name, dataset_name,
-                          config_file, saved_model, train, other_args, hyper_config_dict)
+                          config_file, saved_model, train, other_args)
+    # Make a new experiment ID with descriptive name
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    exp_id = f"obj_fn_{model_name}_{dataset_name}_{timestamp}"
+    config['exp_id'] = exp_id
+    # logger
+    logger = get_logger(config)
+    logger.info('Begin pipeline, task={}, model_name={}, dataset_name={}, exp_id={}'.
+                format(str(task), str(model_name), str(dataset_name), str(exp_id)))
     dataset = get_dataset(config)
     train_data, valid_data, test_data = dataset.get_data()
     data_feature = dataset.get_data_feature()

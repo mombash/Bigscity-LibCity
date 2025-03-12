@@ -25,6 +25,7 @@ from libcity.model.traffic_speed_prediction.STAEformer import STAEformer
 from libcity.model.traffic_speed_prediction.TESTAM import TESTAM
 from libcity.model.traffic_speed_prediction.MegaCRN import MegaCRN
 from libcity.model.traffic_speed_prediction.Mamba import Mamba
+from libcity.model.traffic_speed_prediction.MambaCoder import MambaCoder
 
 __all__ = [
     "DCRNN",
@@ -54,4 +55,5 @@ __all__ = [
     "TESTAM",
     "MegaCRN",
     "Mamba",
+    "MambaCoder",
 ]

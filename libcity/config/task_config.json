@@ -178,7 +178,8 @@
             "ASTGNN",
             "ASTGNNCommon",
             "FreTS",
-            "Mamba"
+            "Mamba",
+            "MambaCoder"
         ],
         "allowed_dataset": [
             "METR_LA",
@@ -597,6 +598,11 @@
             "evaluator": "TrafficStateEvaluator"
         },
         "Mamba": {
+            "dataset_class": "TrafficStatePointDataset",
+            "executor": "TrafficStateExecutor",
+            "evaluator": "TrafficStateEvaluator"
+        },
+        "MambaCoder": {
             "dataset_class": "TrafficStatePointDataset",
             "executor": "TrafficStateExecutor",
             "evaluator": "TrafficStateEvaluator"
