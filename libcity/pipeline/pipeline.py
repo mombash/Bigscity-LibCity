@@ -8,10 +8,144 @@ import os
 import json
 import torch
 import random
+import shutil
+import glob
+import re
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend for server environments
+import matplotlib.pyplot as plt
 from libcity.config import ConfigParser
 from libcity.data import get_dataset
 from libcity.utils import get_executor, get_model, get_logger, ensure_dir, set_random_seed
 import time
+
+
+def extract_loss_data(log_content):
+    """
+    Extract epoch, training loss, and validation loss data from log content.
+    
+    Args:
+        log_content (str): Content of the log file
+        
+    Returns:
+        tuple: (epochs, train_losses, val_losses, learning_rates) lists
+    """
+    epochs = []
+    train_losses = []
+    val_losses = []
+    learning_rates = []
+    
+    # Regular expression to match the epoch summary lines
+    # Example: "Epoch [0/5] train_loss: 87.4590, val_loss: 75.8063, lr: 0.001000, 85.43s"
+    pattern = r'Epoch \[(\d+)/\d+\] train_loss: ([\d\.]+), val_loss: ([\d\.]+), lr: ([\d\.]+)'
+    
+    for line in log_content.split('\n'):
+        match = re.search(pattern, line)
+        if match:
+            epoch = int(match.group(1))
+            train_loss = float(match.group(2))
+            val_loss = float(match.group(3))
+            lr = float(match.group(4))
+            
+            epochs.append(epoch)
+            train_losses.append(train_loss)
+            val_losses.append(val_loss)
+            learning_rates.append(lr)
+    
+    return epochs, train_losses, val_losses, learning_rates
+
+
+def generate_loss_curve(log_content, output_dir, exp_id, model_name, dataset_name):
+    """
+    Generate a visualization of training and validation loss curves.
+    
+    Args:
+        log_content (str): Content of the log file
+        output_dir (str): Directory to save the visualization
+        exp_id (str): Experiment ID for the plot title
+        model_name (str): Name of the model
+        dataset_name (str): Name of the dataset
+    
+    Returns:
+        list: Paths to the generated visualization files
+    """
+    epochs, train_losses, val_losses, learning_rates = extract_loss_data(log_content)
+    
+    if not epochs:
+        return []
+    
+    output_files = []
+    
+    # Create the main figure for loss curves
+    plt.figure(figsize=(12, 6))
+    
+    # Plot both training and validation loss
+    plt.subplot(1, 2, 1)
+    plt.plot(epochs, train_losses, 'b-o', label='Training Loss')
+    plt.plot(epochs, val_losses, 'r-^', label='Validation Loss')
+    
+    # Set labels and title
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title(f'{model_name} on {dataset_name}\nTraining and Validation Loss')
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    
+    # Find minimum validation loss point
+    if val_losses:
+        min_val_idx = val_losses.index(min(val_losses))
+        min_val_epoch = epochs[min_val_idx]
+        min_val_loss = val_losses[min_val_idx]
+        
+        # Mark the best model point
+        plt.axvline(x=min_val_epoch, color='g', linestyle='--', alpha=0.5)
+        plt.plot(min_val_epoch, min_val_loss, 'go', markersize=10)
+        plt.annotate(f'Best: {min_val_loss:.4f}', 
+                     xy=(min_val_epoch, min_val_loss),
+                     xytext=(min_val_epoch + 0.2, min_val_loss * 1.1),
+                     arrowprops=dict(facecolor='green', shrink=0.05, alpha=0.7))
+    
+    # Plot learning rate in a separate subplot
+    if learning_rates:
+        plt.subplot(1, 2, 2)
+        plt.plot(epochs, learning_rates, 'g-o', label='Learning Rate')
+        plt.xlabel('Epoch')
+        plt.ylabel('Learning Rate')
+        plt.title('Learning Rate Schedule')
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+    
+    # Adjust layout and save the figure
+    plt.tight_layout()
+    output_file = os.path.join(output_dir, 'loss_curve.png')
+    plt.savefig(output_file, dpi=150, bbox_inches='tight')
+    plt.close()
+    output_files.append(output_file)
+    
+    # Create a second figure for log-scale view if needed (useful for exponential decay)
+    if min(train_losses) > 0 and min(val_losses) > 0:  # Ensure positive values for log scale
+        plt.figure(figsize=(10, 6))
+        plt.semilogy(epochs, train_losses, 'b-o', label='Training Loss')
+        plt.semilogy(epochs, val_losses, 'r-^', label='Validation Loss')
+        
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss (log scale)')
+        plt.title(f'{model_name} on {dataset_name}\nLoss Curves (Log Scale)')
+        plt.grid(True, alpha=0.3, which='both')
+        plt.legend()
+        
+        # Mark minimum validation loss point
+        if val_losses:
+            plt.axvline(x=min_val_epoch, color='g', linestyle='--', alpha=0.5)
+            plt.plot(min_val_epoch, min_val_loss, 'go', markersize=10)
+        
+        # Save the log-scale figure
+        log_output_file = os.path.join(output_dir, 'loss_curve_log_scale.png')
+        plt.savefig(log_output_file, dpi=150, bbox_inches='tight')
+        plt.close()
+        output_files.append(log_output_file)
+    
+    return output_files
 
 
 def run_model(task=None, model_name=None, dataset_name=None, config_file=None,
@@ -63,6 +197,69 @@ def run_model(task=None, model_name=None, dataset_name=None, config_file=None,
         executor.load_model(model_cache_file)
     # 评估，评估结果将会放在 cache/evaluate_cache 下
     executor.evaluate(test_data)
+    
+    # Copy log file to the cache directory for easier reference
+    # Find the log file corresponding to this experiment
+    log_dir = './libcity/log'
+    cache_dir = './libcity/cache'
+    # Ensure cache logs directory exists
+    logs_cache_dir = os.path.join(cache_dir, exp_id, 'logs')
+    os.makedirs(logs_cache_dir, exist_ok=True)
+    
+    # Get log files for this experiment
+    log_files = glob.glob(f"{log_dir}/{exp_id}*.log")
+    for log_file in log_files:
+        # Copy log file to cache directory
+        basename = os.path.basename(log_file)
+        target_file = os.path.join(logs_cache_dir, basename)
+        shutil.copy2(log_file, target_file)
+        logger.info(f"Copied log file to cache: {target_file}")
+    
+    # Create a more user-friendly summary file with key metrics
+    try:
+        if log_files:
+            with open(log_files[0], 'r') as f:
+                log_content = f.read()
+                
+            # Extract key metrics
+            summary_file = os.path.join(logs_cache_dir, 'training_summary.txt')
+            with open(summary_file, 'w') as f:
+                f.write(f"Training Summary for Experiment: {exp_id}\n")
+                f.write(f"Model: {model_name}\n")
+                f.write(f"Dataset: {dataset_name}\n")
+                f.write("-" * 50 + "\n\n")
+                
+                # Extract and write training epochs info
+                training_lines = [line for line in log_content.split('\n') if 'train_loss' in line and 'val_loss' in line]
+                if training_lines:
+                    f.write("TRAINING PROGRESS:\n")
+                    for line in training_lines:
+                        f.write(line + "\n")
+                    f.write("\n")
+                
+                # Extract and write evaluation metrics
+                eval_lines = [line for line in log_content.split('\n') if 'Evaluate inference' in line]
+                if eval_lines:
+                    f.write("EVALUATION RESULTS:\n")
+                    for line in eval_lines:
+                        f.write(line + "\n")
+                    
+                    metrics_lines = [line for line in log_content.split('\n') if any(metric in line for metric in ['MAE', 'MAPE', 'MSE', 'RMSE'])]
+                    for line in metrics_lines[-10:]:  # Last 10 metrics lines
+                        f.write(line + "\n")
+            
+            logger.info(f"Created training summary: {summary_file}")
+            
+            # Generate and save loss curve visualizations
+            try:
+                viz_files = generate_loss_curve(log_content, logs_cache_dir, exp_id, model_name, dataset_name)
+                for viz_file in viz_files:
+                    logger.info(f"Generated visualization: {viz_file}")
+            except Exception as e:
+                logger.warning(f"Error generating loss curve visualizations: {str(e)}")
+                
+    except Exception as e:
+        logger.warning(f"Error creating training summary: {str(e)}")
 
 
 def parse_search_space(space_file):
