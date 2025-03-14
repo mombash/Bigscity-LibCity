@@ -1,10 +1,70 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from logging import getLogger
 from libcity.model import loss
 from libcity.model.abstract_traffic_state_model import AbstractTrafficStateModel
 
 from mamba_ssm import Mamba as MambaSSM
+
+
+class EnhancedMambaLayer(nn.Module):
+    """Enhanced Mamba layer with additional components but no attention"""
+    def __init__(self, d_model, d_state, d_conv, expand, dropout=0.1):
+        super().__init__()
+        # First Mamba block with pre-norm
+        self.layer_norm1 = nn.LayerNorm(d_model)
+        self.mamba1 = MambaSSM(
+            d_model=d_model,
+            d_state=d_state,
+            d_conv=d_conv,
+            expand=expand
+        )
+        self.dropout1 = nn.Dropout(dropout)
+        
+        # Second Mamba block with pre-norm (different parameters)
+        self.layer_norm2 = nn.LayerNorm(d_model)
+        self.mamba2 = MambaSSM(
+            d_model=d_model,
+            d_state=d_state,
+            d_conv=d_conv,
+            expand=expand
+        )
+        self.dropout2 = nn.Dropout(dropout)
+        
+        # Feed-forward block with pre-norm
+        self.layer_norm3 = nn.LayerNorm(d_model)
+        self.feed_forward = nn.Sequential(
+            nn.Linear(d_model, d_model * 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model * 4, d_model)
+        )
+        self.dropout3 = nn.Dropout(dropout)
+    
+    def forward(self, x):
+        # First Mamba block with residual
+        residual = x
+        x = self.layer_norm1(x)
+        x = self.mamba1(x)
+        x = self.dropout1(x)
+        x = x + residual
+        
+        # Second Mamba block with residual
+        residual = x
+        x = self.layer_norm2(x)
+        x = self.mamba2(x)
+        x = self.dropout2(x)
+        x = x + residual
+        
+        # Feed-forward with residual
+        residual = x
+        x = self.layer_norm3(x)
+        x = self.feed_forward(x)
+        x = self.dropout3(x)
+        x = x + residual
+        
+        return x
 
 
 class Mamba(AbstractTrafficStateModel):
@@ -17,42 +77,51 @@ class Mamba(AbstractTrafficStateModel):
         self.output_dim = self.data_feature.get('output_dim', 1)
 
         # Get model config
-        self.input_window = config.get('input_window', 1)
-        self.output_window = config.get('output_window', 1)
+        self.input_window = config.get('input_window', 12)
+        self.output_window = config.get('output_window', 12)
         self.device = config.get('device', torch.device('cpu'))
         self._logger = getLogger()
         
         # Get Mamba-specific parameters from config
-        self.d_model = config.get('d_model', 16)
-        self.d_state = config.get('d_state', 16)
+        self.d_model = config.get('d_model', 96)  # Increased from 16 to 96
+        self.d_state = config.get('d_state', 32)  # Increased from 16 to 32
         self.d_conv = config.get('d_conv', 4)
         self.expand = config.get('expand', 2)
+        self.dropout = config.get('dropout', 0.1)  # Added dropout
         
         # Number of stacked Mamba layers
         self.num_layers = config.get('num_layers', 1)
-        self._logger.info(f"Building Mamba model with {self.num_layers} layers")
+        self._logger.info(f"Building Enhanced Mamba model with {self.num_layers} layers")
 
-        # Input and output projection layers to match dimensions
+        # Input embedding and output projection layers
         self.input_proj = nn.Linear(self.feature_dim, self.d_model)
         self.output_proj = nn.Linear(self.d_model, self.output_dim)
         
-        # Create multiple Mamba layers stacked in series
-        self.mamba_layers = nn.ModuleList([
-            MambaSSM(
+        # Layer normalization for input
+        self.input_layer_norm = nn.LayerNorm(self.d_model)
+        
+        # Positional encoding
+        self.pos_encoder = nn.Embedding(self.input_window, self.d_model)
+        
+        # Enhanced Mamba layers
+        self.enhanced_layers = nn.ModuleList([
+            EnhancedMambaLayer(
                 d_model=self.d_model,
                 d_state=self.d_state,
                 d_conv=self.d_conv,
-                expand=self.expand
+                expand=self.expand,
+                dropout=self.dropout
             ) for _ in range(self.num_layers)
         ])
         
-        # Add layer normalization between Mamba layers
-        self.layer_norms = nn.ModuleList([
-            nn.LayerNorm(self.d_model) for _ in range(self.num_layers)
-        ])
+        # Add skip connection adapter
+        self.skip_adapter = nn.Linear(self.d_model * self.num_layers, self.d_model)
+        
+        # Final layer normalization
+        self.final_layer_norm = nn.LayerNorm(self.d_model)
         
         # Log the device being used
-        self._logger.info(f"Mamba model configured for device: {self.device}")
+        self._logger.info(f"Enhanced Mamba model configured for device: {self.device}")
 
     def forward(self, batch):
         """
@@ -67,7 +136,7 @@ class Mamba(AbstractTrafficStateModel):
         
         batch_size = x.shape[0]
         
-        # Reshape for processing each node and time step
+        # Reshape for processing each node separately
         # [batch_size, input_window, num_nodes, feature_dim] -> [batch_size * num_nodes, input_window, feature_dim]
         x = x.permute(0, 2, 1, 3).contiguous()
         x = x.reshape(batch_size * self.num_nodes, self.input_window, self.feature_dim)
@@ -75,25 +144,57 @@ class Mamba(AbstractTrafficStateModel):
         # Project input to model dimension
         x = self.input_proj(x)  # [batch_size * num_nodes, input_window, d_model]
         
-        # Process with stacked Mamba layers
-        for i, (mamba_layer, layer_norm) in enumerate(zip(self.mamba_layers, self.layer_norms)):
-            # Pass through the Mamba layer
-            mamba_output = mamba_layer(x)
-            
-            # Apply layer normalization
-            mamba_output = layer_norm(mamba_output)
-            
-            # Residual connection (for layers after the first one)
-            if i > 0:
-                x = x + mamba_output
-            else:
-                x = mamba_output
+        # Apply input layer normalization
+        x = self.input_layer_norm(x)
+        
+        # Add positional encoding
+        positions = torch.arange(0, self.input_window, device=self.device).unsqueeze(0).expand(batch_size * self.num_nodes, -1)
+        pos_encoding = self.pos_encoder(positions)
+        x = x + pos_encoding
+        
+        # Store layer outputs for skip connections
+        layer_outputs = []
+        
+        # Process with enhanced Mamba layers
+        for layer in self.enhanced_layers:
+            x = layer(x)
+            layer_outputs.append(x)
+        
+        # Concatenate all layer outputs for skip connections
+        if len(layer_outputs) > 1:
+            concatenated = torch.cat(layer_outputs, dim=-1)
+            x = self.skip_adapter(concatenated)
+        
+        # Apply final layer normalization
+        x = self.final_layer_norm(x)
         
         # Project output to feature dimension
         x = self.output_proj(x)  # [batch_size * num_nodes, input_window, output_dim]
         
-        # Take the last 'output_window' steps
-        x = x[:, -self.output_window:, :]  # [batch_size * num_nodes, output_window, output_dim]
+        # Take the last 'output_window' steps or generate future predictions
+        if self.input_window >= self.output_window:
+            x = x[:, -self.output_window:, :]  # [batch_size * num_nodes, output_window, output_dim]
+        else:
+            # Need to generate predictions beyond input window
+            last_points = x[:, -1:, :]  # [batch_size * num_nodes, 1, output_dim]
+            extra_steps = self.output_window - self.input_window
+            
+            # Simple autoregressive generation for extra steps
+            future_preds = [last_points]
+            curr_input = last_points
+            
+            for _ in range(extra_steps):
+                # Project to d_model, process with last Mamba layer, and project back
+                curr_proj = self.input_proj(curr_input)
+                curr_proj = self.enhanced_layers[-1](curr_proj)
+                curr_output = self.output_proj(curr_proj)
+                future_preds.append(curr_output)
+                curr_input = curr_output
+            
+            # Combine existing and generated future steps
+            existing_steps = x[:, :self.input_window, :]
+            future_steps = torch.cat(future_preds, dim=1)
+            x = torch.cat([existing_steps[:, -(self.output_window-extra_steps):, :], future_steps], dim=1)
         
         # Reshape back to expected output format
         x = x.reshape(batch_size, self.num_nodes, self.output_window, self.output_dim)
@@ -136,8 +237,8 @@ class Mamba(AbstractTrafficStateModel):
         # Check device of model components
         self._logger.info(f"Device of input_proj weight: {self.input_proj.weight.device}")
         self._logger.info(f"Device of output_proj weight: {self.output_proj.weight.device}")
-        for i, layer in enumerate(self.mamba_layers):
-            self._logger.info(f"Device of mamba_layer {i} first parameter: {next(layer.parameters()).device}")
+        for i, layer in enumerate(self.enhanced_layers):
+            self._logger.info(f"Device of enhanced_layer {i} first parameter: {next(layer.parameters()).device}")
         self._logger.info(f"Device of test tensor: {test_tensor.device}")
         
         # Try a forward pass with the test tensor and check output device

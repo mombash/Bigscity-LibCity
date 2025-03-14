@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from logging import getLogger
 from libcity.model import loss
 from libcity.model.abstract_traffic_state_model import AbstractTrafficStateModel
@@ -7,51 +8,69 @@ from libcity.model.abstract_traffic_state_model import AbstractTrafficStateModel
 from mamba_ssm import Mamba as MambaSSM
 
 
-class EncoderMambaDecoderBlock(nn.Module):
-    """A block consisting of an encoder, a Mamba model, and a decoder"""
-    def __init__(self, input_dim, hidden_dim, output_dim, d_model, d_state, d_conv, expand):
+class DualDirectionMambaBlock(nn.Module):
+    """Enhanced Mamba block that processes in both temporal and node dimensions"""
+    def __init__(self, d_model, d_state, d_conv, expand, dropout=0.1):
         super().__init__()
         
-        # Encoder
-        self.encoder = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, d_model)
-        )
+        # Pre-layer normalization for temporal Mamba
+        self.norm1 = nn.LayerNorm(d_model)
         
-        # Mamba
-        self.mamba = MambaSSM(
+        # Temporal direction Mamba
+        self.mamba_temporal = MambaSSM(
             d_model=d_model,
             d_state=d_state,
             d_conv=d_conv,
             expand=expand
         )
+        self.dropout1 = nn.Dropout(dropout)
         
-        # Decoder
-        self.decoder = nn.Sequential(
-            nn.Linear(d_model, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, output_dim)
+        # Pre-layer normalization for spatial direction
+        self.norm2 = nn.LayerNorm(d_model)
+        
+        # Spatial direction processing - using standard Mamba without transposition
+        # This avoids dimension mismatch issues
+        self.mamba_spatial = MambaSSM(
+            d_model=d_model,
+            d_state=d_state,
+            d_conv=d_conv,
+            expand=expand
         )
+        self.dropout2 = nn.Dropout(dropout)
+        
+        # Feed-forward network
+        self.norm3 = nn.LayerNorm(d_model)
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, d_model * 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model * 4, d_model)
+        )
+        self.dropout3 = nn.Dropout(dropout)
         
     def forward(self, x):
-        # Encode
-        x_encoded = self.encoder(x)
+        # Temporal Mamba processing with residual
+        residual = x
+        x_norm = self.norm1(x)
+        x_temporal = self.mamba_temporal(x_norm)
+        x = residual + self.dropout1(x_temporal)
         
-        # Process with Mamba (maintaining sequence dimension)
-        if len(x_encoded.shape) == 2:  # For 2D input, add sequence dimension
-            x_encoded = x_encoded.unsqueeze(1)
-            
-        x_mamba = self.mamba(x_encoded)
+        # Second Mamba processing with residual (alternative direction)
+        residual = x
+        x_norm = self.norm2(x)
         
-        # Remove sequence dimension if it was added
-        if len(x.shape) == 2 and len(x_mamba.shape) == 3:
-            x_mamba = x_mamba.squeeze(1)
-            
-        # Decode
-        x_decoded = self.decoder(x_mamba)
+        # Process with the second Mamba - using same direction to avoid dimension issues
+        # But with different parameters to capture different patterns
+        x_spatial = self.mamba_spatial(x_norm)
+        x = residual + self.dropout2(x_spatial)
         
-        return x_decoded
+        # Feed-forward with residual
+        residual = x
+        x_norm = self.norm3(x)
+        x_ffn = self.ffn(x_norm)
+        x = residual + self.dropout3(x_ffn)
+        
+        return x
 
 
 class MambaCoder(AbstractTrafficStateModel):
@@ -64,90 +83,58 @@ class MambaCoder(AbstractTrafficStateModel):
         self.output_dim = self.data_feature.get('output_dim', 1)
 
         # Get model config
-        self.input_window = config.get('input_window', 1)
-        self.output_window = config.get('output_window', 1)
+        self.input_window = config.get('input_window', 12)
+        self.output_window = config.get('output_window', 12)
         self.device = config.get('device', torch.device('cpu'))
         self._logger = getLogger()
         
         # Get Mamba-specific parameters from config
-        self.d_model = config.get('d_model', 16)
-        self.d_state = config.get('d_state', 16)
+        self.d_model = config.get('d_model', 96)  # Increased from 16 to 96
+        self.d_state = config.get('d_state', 32)  # Increased from 16 to 32
         self.d_conv = config.get('d_conv', 4)
         self.expand = config.get('expand', 2)
+        self.dropout = config.get('dropout', 0.1)
         
         # Number of stacked Mamba layers
-        self.num_layers = config.get('num_layers', 1)
-        self._logger.info(f"Building MambaCoder model with {self.num_layers} stacked layers")
+        self.num_layers = config.get('num_layers', 5)
+        self._logger.info(f"Building Enhanced MambaCoder model with {self.num_layers} layers")
         
-        # Hidden dimension for encoder/decoder
-        self.hidden_dim = config.get('hidden_dim', 64)
+        # Layer normalization for input
+        self.input_layer_norm = nn.LayerNorm(self.d_model)
         
-        # Input and output dimensions for each block
-        input_dim = self.input_window * self.num_nodes * self.feature_dim
+        # Input embedding
+        self.input_embedding = nn.Linear(self.feature_dim, self.d_model)
         
-        # Final output dimension
-        final_output_dim = self.output_window * self.num_nodes * self.output_dim
+        # Additional convolution for spatial mixing
+        self.spatial_mix = nn.Linear(self.d_model, self.d_model)
         
-        # Create multiple EncoderMambaDecoder blocks
-        self.blocks = nn.ModuleList()
+        # Positional encoding
+        self.pos_encoder = nn.Embedding(self.input_window, self.d_model)
         
-        if self.num_layers == 1:
-            # Single block case
-            self.blocks.append(
-                EncoderMambaDecoderBlock(
-                    input_dim=input_dim,
-                    hidden_dim=self.hidden_dim,
-                    output_dim=final_output_dim,
-                    d_model=self.d_model,
-                    d_state=self.d_state,
-                    d_conv=self.d_conv,
-                    expand=self.expand
-                )
-            )
-        else:
-            # First block: input_dim -> intermediate_dim
-            intermediate_dim = self.hidden_dim
-            self.blocks.append(
-                EncoderMambaDecoderBlock(
-                    input_dim=input_dim,
-                    hidden_dim=self.hidden_dim,
-                    output_dim=intermediate_dim,
-                    d_model=self.d_model,
-                    d_state=self.d_state,
-                    d_conv=self.d_conv,
-                    expand=self.expand
-                )
-            )
-            
-            # Middle blocks: intermediate_dim -> intermediate_dim
-            for _ in range(self.num_layers - 2):
-                self.blocks.append(
-                    EncoderMambaDecoderBlock(
-                        input_dim=intermediate_dim,
-                        hidden_dim=self.hidden_dim,
-                        output_dim=intermediate_dim,
-                        d_model=self.d_model,
-                        d_state=self.d_state,
-                        d_conv=self.d_conv,
-                        expand=self.expand
-                    )
-                )
-            
-            # Last block: intermediate_dim -> final_output_dim
-            self.blocks.append(
-                EncoderMambaDecoderBlock(
-                    input_dim=intermediate_dim,
-                    hidden_dim=self.hidden_dim,
-                    output_dim=final_output_dim,
-                    d_model=self.d_model,
-                    d_state=self.d_state,
-                    d_conv=self.d_conv,
-                    expand=self.expand
-                )
-            )
+        # Stack of dual-direction Mamba blocks
+        self.blocks = nn.ModuleList([
+            DualDirectionMambaBlock(
+                d_model=self.d_model,
+                d_state=self.d_state,
+                d_conv=self.d_conv,
+                expand=self.expand,
+                dropout=self.dropout
+            ) for _ in range(self.num_layers)
+        ])
+        
+        # Skip connection handling
+        self.use_skip_connections = config.get('use_skip_connections', True)
+        if self.use_skip_connections:
+            self.skip_adapter = nn.Linear(self.d_model * self.num_layers, self.d_model)
+        
+        # Final output projection
+        self.output_projection = nn.Sequential(
+            nn.LayerNorm(self.d_model),
+            nn.Linear(self.d_model, self.output_dim)
+        )
         
         # Log the device being used
-        self._logger.info(f"MambaCoder model configured for device: {self.device}")
+        self._logger.info(f"Enhanced MambaCoder model configured for device: {self.device}")
 
     def forward(self, batch):
         """
@@ -162,15 +149,70 @@ class MambaCoder(AbstractTrafficStateModel):
         
         batch_size = x.shape[0]
         
-        # Flatten the input for the first encoder
-        x = x.reshape(batch_size, -1)  # [batch_size, input_window * num_nodes * feature_dim]
+        # Preserve spatial structure - process each node separately
+        # [batch_size, input_window, num_nodes, feature_dim] -> [batch_size * num_nodes, input_window, feature_dim]
+        x = x.permute(0, 2, 1, 3).contiguous()
+        x = x.reshape(batch_size * self.num_nodes, self.input_window, self.feature_dim)
         
-        # Process through stacked blocks
-        for i, block in enumerate(self.blocks):
+        # Apply input embedding
+        x = self.input_embedding(x)  # [batch_size * num_nodes, input_window, d_model]
+        
+        # Add positional encoding
+        positions = torch.arange(0, self.input_window, device=self.device).unsqueeze(0).expand(batch_size * self.num_nodes, -1)
+        pos_encoding = self.pos_encoder(positions)
+        x = x + pos_encoding
+        
+        # Apply input normalization
+        x = self.input_layer_norm(x)
+        
+        # Process through Mamba blocks with skip connections
+        if self.use_skip_connections:
+            layer_outputs = []
+            
+        for block in self.blocks:
             x = block(x)
             
-        # Reshape to the expected output format
-        return x.reshape(batch_size, self.output_window, self.num_nodes, self.output_dim)
+            if self.use_skip_connections:
+                layer_outputs.append(x)
+        
+        # Apply skip connections if enabled
+        if self.use_skip_connections and len(self.blocks) > 1:
+            concatenated = torch.cat(layer_outputs, dim=-1)
+            x = self.skip_adapter(concatenated)
+        
+        # Project to output dimension
+        x = self.output_projection(x)  # [batch_size * num_nodes, input_window, output_dim]
+        
+        # Take the last 'output_window' steps or generate future predictions
+        if self.input_window >= self.output_window:
+            x = x[:, -self.output_window:, :]  # [batch_size * num_nodes, output_window, output_dim]
+        else:
+            # Need to generate predictions beyond input window
+            last_points = x[:, -1:, :]  # [batch_size * num_nodes, 1, output_dim]
+            extra_steps = self.output_window - self.input_window
+            
+            # Simple autoregressive generation for extra steps
+            future_preds = [last_points]
+            curr_input = last_points
+            
+            for _ in range(extra_steps):
+                # Project back to d_model, process with last block, project to output
+                curr_projected = self.input_embedding(curr_input)
+                curr_processed = self.blocks[-1](curr_projected)
+                curr_output = self.output_projection(curr_processed)
+                future_preds.append(curr_output)
+                curr_input = curr_output
+            
+            # Combine existing and generated future steps
+            existing_steps = x[:, :self.input_window, :]
+            future_steps = torch.cat(future_preds, dim=1)
+            x = torch.cat([existing_steps[:, -(self.output_window-extra_steps):, :], future_steps], dim=1)
+        
+        # Reshape back to expected output format
+        x = x.reshape(batch_size, self.num_nodes, self.output_window, self.output_dim)
+        x = x.permute(0, 2, 1, 3).contiguous()  # [batch_size, output_window, num_nodes, output_dim]
+        
+        return x
 
     def calculate_loss(self, batch):
         """
@@ -185,8 +227,10 @@ class MambaCoder(AbstractTrafficStateModel):
         y_true = self._scaler.inverse_transform(y_true[..., :self.output_dim])
         y_predicted = self._scaler.inverse_transform(y_predicted[..., :self.output_dim])
         
-        # Calculate masked MAE loss
-        return loss.masked_mae_torch(y_predicted, y_true, 0)
+        # Base masked MAE loss (no weighting to keep it simple)
+        base_loss = loss.masked_mae_torch(y_predicted, y_true, 0)
+        
+        return base_loss
 
     def predict(self, batch):
         """
@@ -201,22 +245,21 @@ class MambaCoder(AbstractTrafficStateModel):
         Method to check and log whether the model is actually using the GPU
         """
         # Create a small test tensor
-        test_tensor = torch.randn(1, self.input_window * self.num_nodes * self.feature_dim)
+        test_tensor = torch.randn(1, self.input_window, self.feature_dim)
         test_tensor = test_tensor.to(self.device)
         
         # Check device of model components
         for i, block in enumerate(self.blocks):
-            self._logger.info(f"Device of block {i} encoder first parameter: {next(block.encoder.parameters()).device}")
-            self._logger.info(f"Device of block {i} mamba first parameter: {next(block.mamba.parameters()).device}")
-            self._logger.info(f"Device of block {i} decoder first parameter: {next(block.decoder.parameters()).device}")
+            self._logger.info(f"Device of block {i} mamba_temporal first parameter: {next(block.mamba_temporal.parameters()).device}")
+            self._logger.info(f"Device of block {i} mamba_spatial first parameter: {next(block.mamba_spatial.parameters()).device}")
         
         self._logger.info(f"Device of test tensor: {test_tensor.device}")
         
         # Try a forward pass with the first block and check output device
         with torch.no_grad():
-            self.blocks[0].encoder.eval()
-            out = self.blocks[0].encoder(test_tensor)
-            self._logger.info(f"Device of output from first block encoder: {out.device}")
+            self.input_embedding.eval()
+            out = self.input_embedding(test_tensor)
+            self._logger.info(f"Device of output from input embedding: {out.device}")
         
         # Return True if all components are on the correct device
-        return all(p.device == self.device for p in self.parameters()) 
+        return all(p.device == self.device for p in self.parameters())

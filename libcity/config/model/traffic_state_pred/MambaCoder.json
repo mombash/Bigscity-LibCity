@@ -1,14 +1,22 @@
 {
-    "d_model": 16,
-    "d_state": 16,
+    "d_model": 96,
+    "d_state": 32,
     "d_conv": 4,
     "expand": 2,
-    "num_layers": 2,
+    "num_layers": 5,
     "hidden_dim": 64,
-    "max_epoch": 100,
+    "max_epoch": 150,
     "learner": "adam",
     "learning_rate": 0.001,
     "input_window": 12,
     "output_window": 12,
-    "executor": "MambaExecutor"
+    "executor": "MambaExecutor",
+    "dropout": 0.1,
+    "use_skip_connections": true,
+    "batch_size": 64,
+    "lr_decay": true,
+    "lr_scheduler": "cosinelr",
+    "early_stop": true,
+    "patience": 15,
+    "weight_decay": 0.0001
 }
