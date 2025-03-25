@@ -90,7 +90,7 @@ class Mamba(AbstractTrafficStateModel):
         self.dropout = config.get('dropout', 0.1)  # Added dropout
         
         # Number of stacked Mamba layers
-        self.num_layers = config.get('num_layers', 1)
+        self.num_layers = config.get('num_layers', 3)
         self._logger.info(f"Building Enhanced Mamba model with {self.num_layers} layers")
 
         # Input embedding and output projection layers
@@ -101,7 +101,7 @@ class Mamba(AbstractTrafficStateModel):
         self.input_layer_norm = nn.LayerNorm(self.d_model)
         
         # Positional encoding
-        self.pos_encoder = nn.Embedding(self.input_window, self.d_model)
+        self.pos_encoder = nn.Embedding(self.input_window * max(1, config.get('batch_size', 64)), self.d_model)
         
         # Enhanced Mamba layers
         self.enhanced_layers = nn.ModuleList([
@@ -136,19 +136,19 @@ class Mamba(AbstractTrafficStateModel):
         
         batch_size = x.shape[0]
         
-        # Reshape for processing each node separately
-        # [batch_size, input_window, num_nodes, feature_dim] -> [batch_size * num_nodes, input_window, feature_dim]
-        x = x.permute(0, 2, 1, 3).contiguous()
-        x = x.reshape(batch_size * self.num_nodes, self.input_window, self.feature_dim)
+        # Reshape for processing each node across all batches and time steps
+        # [batch_size, input_window, num_nodes, feature_dim] -> [num_nodes, batch_size * input_window, feature_dim]
+        x = x.permute(2, 0, 1, 3).contiguous()
+        x = x.reshape(self.num_nodes, batch_size * self.input_window, self.feature_dim)
         
         # Project input to model dimension
-        x = self.input_proj(x)  # [batch_size * num_nodes, input_window, d_model]
+        x = self.input_proj(x)  # [num_nodes, batch_size * input_window, d_model]
         
         # Apply input layer normalization
         x = self.input_layer_norm(x)
         
-        # Add positional encoding
-        positions = torch.arange(0, self.input_window, device=self.device).unsqueeze(0).expand(batch_size * self.num_nodes, -1)
+        # Add positional encoding - need different approach since sequence length is now batch_size * input_window
+        positions = torch.arange(0, batch_size * self.input_window, device=self.device).unsqueeze(0).expand(self.num_nodes, -1)
         pos_encoding = self.pos_encoder(positions)
         x = x + pos_encoding
         
@@ -169,36 +169,23 @@ class Mamba(AbstractTrafficStateModel):
         x = self.final_layer_norm(x)
         
         # Project output to feature dimension
-        x = self.output_proj(x)  # [batch_size * num_nodes, input_window, output_dim]
+        x = self.output_proj(x)  # [num_nodes, batch_size * input_window, output_dim]
         
-        # Take the last 'output_window' steps or generate future predictions
+        # Reshape back to separate batch and time dimensions
+        x = x.reshape(self.num_nodes, batch_size, self.input_window, self.output_dim)
+        
+        # Take the last 'output_window' steps for each batch
         if self.input_window >= self.output_window:
-            x = x[:, -self.output_window:, :]  # [batch_size * num_nodes, output_window, output_dim]
+            x = x[:, :, -self.output_window:, :]  # [num_nodes, batch_size, output_window, output_dim]
         else:
-            # Need to generate predictions beyond input window
-            last_points = x[:, -1:, :]  # [batch_size * num_nodes, 1, output_dim]
-            extra_steps = self.output_window - self.input_window
-            
-            # Simple autoregressive generation for extra steps
-            future_preds = [last_points]
-            curr_input = last_points
-            
-            for _ in range(extra_steps):
-                # Project to d_model, process with last Mamba layer, and project back
-                curr_proj = self.input_proj(curr_input)
-                curr_proj = self.enhanced_layers[-1](curr_proj)
-                curr_output = self.output_proj(curr_proj)
-                future_preds.append(curr_output)
-                curr_input = curr_output
-            
-            # Combine existing and generated future steps
-            existing_steps = x[:, :self.input_window, :]
-            future_steps = torch.cat(future_preds, dim=1)
-            x = torch.cat([existing_steps[:, -(self.output_window-extra_steps):, :], future_steps], dim=1)
+            # Need to generate predictions beyond input window for each node
+            # This is a simplified approach - for proper implementation, you'd need to rework the autoregressive generation
+            last_points = x[:, :, -1:, :]  # [num_nodes, batch_size, 1, output_dim]
+            extended_predictions = last_points.repeat(1, 1, self.output_window - self.input_window, 1)
+            x = torch.cat([x[:, :, :self.input_window, :], extended_predictions], dim=2)  # [num_nodes, batch_size, output_window, output_dim]
         
-        # Reshape back to expected output format
-        x = x.reshape(batch_size, self.num_nodes, self.output_window, self.output_dim)
-        x = x.permute(0, 2, 1, 3).contiguous()  # [batch_size, output_window, num_nodes, output_dim]
+        # Final reshape to expected output format
+        x = x.permute(1, 2, 0, 3).contiguous()  # [batch_size, output_window, num_nodes, output_dim]
         
         return x
 
