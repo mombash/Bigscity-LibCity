@@ -280,7 +280,7 @@ class TrafficStateDataset(AbstractDataset):
         data = []
         for i in range(0, df.shape[0], len_time):
             data.append(df[i:i + len_time].values)
-        data = np.array(data, dtype=np.float)  # (len(self.geo_ids), len_time, feature_dim)
+        data = np.array(data, dtype=np.float64)  # (len(self.geo_ids), len_time, feature_dim)
         data = data.swapaxes(0, 1)  # (len_time, len(self.geo_ids), feature_dim)
         self._logger.info("Loaded file " + filename + '.dyna' + ', shape=' + str(data.shape))
         return data
@@ -326,7 +326,7 @@ class TrafficStateDataset(AbstractDataset):
         data = []
         for i in range(0, df.shape[0], len_time):
             data.append(df[i:i + len_time].values)
-        data = np.array(data, dtype=np.float)  # (len(self.geo_ids), len_time, feature_dim)
+        data = np.array(data, dtype=np.float64)  # (len(self.geo_ids), len_time, feature_dim)
         data = data.swapaxes(0, 1)  # (len_time, len(self.geo_ids), feature_dim)
         self._logger.info("Loaded file " + filename + '.grid' + ', shape=' + str(data.shape))
         return data
@@ -376,7 +376,7 @@ class TrafficStateDataset(AbstractDataset):
                 index = (i * self.len_column + j) * len_time
                 tmp.append(df[index:index + len_time].values)
             data.append(tmp)
-        data = np.array(data, dtype=np.float)  # (len_row, len_column, len_time, feature_dim)
+        data = np.array(data, dtype=np.float64)  # (len_row, len_column, len_time, feature_dim)
         data = data.swapaxes(2, 0).swapaxes(1, 2)  # (len_time, len_row, len_column, feature_dim)
         self._logger.info("Loaded file " + filename + '.grid' + ', shape=' + str(data.shape))
         return data
@@ -418,7 +418,7 @@ class TrafficStateDataset(AbstractDataset):
         feature_dim = len(odfile.columns) - 3
         df = odfile[odfile.columns[-feature_dim:]]
         len_time = len(self.timesolts)
-        data = np.zeros((self.num_nodes, self.num_nodes, len_time, feature_dim))
+        data = np.zeros((self.num_nodes, self.num_nodes, len_time, feature_dim), dtype=np.float64)
         for i in range(self.num_nodes):
             origin_index = i * len_time * self.num_nodes  # 每个起点占据len_t*n行
             for j in range(self.num_nodes):
@@ -470,7 +470,7 @@ class TrafficStateDataset(AbstractDataset):
         feature_dim = len(gridodfile.columns) - 5
         df = gridodfile[gridodfile.columns[-feature_dim:]]
         len_time = len(self.timesolts)
-        data = np.zeros((len(self.geo_ids), len(self.geo_ids), len_time, feature_dim))
+        data = np.zeros((len(self.geo_ids), len(self.geo_ids), len_time, feature_dim), dtype=np.float64)
         for oi in range(self.len_row):
             for oj in range(self.len_column):
                 origin_index = (oi * self.len_column + oj) * len_time * len(self.geo_ids)  # 每个起点占据len_t*n行
@@ -527,7 +527,7 @@ class TrafficStateDataset(AbstractDataset):
         feature_dim = len(gridodfile.columns) - 5
         df = gridodfile[gridodfile.columns[-feature_dim:]]
         len_time = len(self.timesolts)
-        data = np.zeros((self.len_row, self.len_column, self.len_row, self.len_column, len_time, feature_dim))
+        data = np.zeros((self.len_row, self.len_column, self.len_row, self.len_column, len_time, feature_dim), dtype=np.float64)
         for oi in range(self.len_row):
             for oj in range(self.len_column):
                 origin_index = (oi * self.len_column + oj) * len_time * len(self.geo_ids)  # 每个起点占据len_t*n行

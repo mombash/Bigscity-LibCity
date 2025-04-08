@@ -70,17 +70,57 @@ class EnhancedMambaLayer(nn.Module):
 class Mamba(AbstractTrafficStateModel):
     def __init__(self, config, data_feature):
         super().__init__(config, data_feature)
-        # Get data features
+        # Get data features first to ensure num_nodes is defined
         self._scaler = self.data_feature.get('scaler')
         self.num_nodes = self.data_feature.get('num_nodes', 1)
         self.feature_dim = self.data_feature.get('feature_dim', 1)
         self.output_dim = self.data_feature.get('output_dim', 1)
 
-        # Get model config
+        # Get model config (Define input_window earlier)
         self.input_window = config.get('input_window', 12)
         self.output_window = config.get('output_window', 12)
         self.device = config.get('device', torch.device('cpu'))
         self._logger = getLogger()
+        
+        # Add STAEformer-style time handling parameters
+        self.add_time_in_day = config.get("add_time_in_day", False)
+        self.add_day_in_week = config.get("add_day_in_week", False)
+        self.steps_per_day = config.get("steps_per_day", 288)
+        
+        # Get embedding dimensions from config
+        self.input_embedding_dim = config.get('input_embedding_dim', 24)
+        self.tod_embedding_dim = config.get('tod_embedding_dim', 24) if self.add_time_in_day else 0
+        self.dow_embedding_dim = config.get('dow_embedding_dim', 24) if self.add_day_in_week else 0
+        self.spatial_embedding_dim = config.get('spatial_embedding_dim', 16)
+        self.adaptive_embedding_dim = config.get('adaptive_embedding_dim', 80)
+        
+        # Calculate model dimension (total embedding size)
+        self.model_dim = (
+            self.input_embedding_dim +
+            self.tod_embedding_dim +
+            self.dow_embedding_dim +
+            self.spatial_embedding_dim +
+            self.adaptive_embedding_dim
+        )
+        
+        # Create embeddings (STAEformer-style)
+        self.input_proj = nn.Linear(self.feature_dim, self.input_embedding_dim)
+        
+        if self.add_time_in_day:
+            self.tod_embedding = nn.Embedding(self.steps_per_day, self.tod_embedding_dim)
+        if self.add_day_in_week:
+            self.dow_embedding = nn.Embedding(7, self.dow_embedding_dim)
+        
+        # Initialize spatial embedding
+        self.spatial_embedding = nn.Parameter(torch.empty(self.num_nodes, self.spatial_embedding_dim))
+        nn.init.xavier_uniform_(self.spatial_embedding)
+        
+        # Initialize adaptive embedding (Now self.input_window is defined)
+        if self.adaptive_embedding_dim > 0:
+            self.adaptive_embedding = nn.Parameter(
+                torch.empty(self.input_window, self.num_nodes, self.adaptive_embedding_dim)
+            )
+            nn.init.xavier_uniform_(self.adaptive_embedding)
         
         # Get Mamba-specific parameters from config
         self.d_model = config.get('d_model', 96)  # Increased from 16 to 96
@@ -89,22 +129,15 @@ class Mamba(AbstractTrafficStateModel):
         self.expand = config.get('expand', 2)
         self.dropout = config.get('dropout', 0.1)  # Added dropout
         
+        # Input projection to Mamba dimension
+        self.mamba_input_proj = nn.Linear(self.model_dim, self.d_model)
+        
         # Number of stacked Mamba layers
         self.num_layers = config.get('num_layers', 3)
         self._logger.info(f"Building Enhanced Mamba model with {self.num_layers} layers")
 
-        # Input embedding and output projection layers
-        self.input_proj = nn.Linear(self.feature_dim, self.d_model)
-        self.output_proj = nn.Linear(self.d_model, self.output_dim)
-        
-        # Layer normalization for input
-        self.input_layer_norm = nn.LayerNorm(self.d_model)
-        
-        # Positional encoding
-        self.pos_encoder = nn.Embedding(self.input_window * max(1, config.get('batch_size', 64)), self.d_model)
-        
-        # Enhanced Mamba layers
-        self.enhanced_layers = nn.ModuleList([
+        # Separate Mamba layers for temporal and spatial
+        self.temporal_layers = nn.ModuleList([
             EnhancedMambaLayer(
                 d_model=self.d_model,
                 d_state=self.d_state,
@@ -114,8 +147,21 @@ class Mamba(AbstractTrafficStateModel):
             ) for _ in range(self.num_layers)
         ])
         
-        # Add skip connection adapter
-        self.skip_adapter = nn.Linear(self.d_model * self.num_layers, self.d_model)
+        self.spatial_layers = nn.ModuleList([
+            EnhancedMambaLayer(
+                d_model=self.d_model,
+                d_state=self.d_state,
+                d_conv=self.d_conv,
+                expand=self.expand,
+                dropout=self.dropout
+            ) for _ in range(self.num_layers)
+        ])
+        
+        # Combination weights
+        self.combine_weights = nn.Parameter(torch.randn(2, self.d_model))
+        
+        # Output projection layers
+        self.output_proj = nn.Linear(self.d_model, self.output_dim)
         
         # Final layer normalization
         self.final_layer_norm = nn.LayerNorm(self.d_model)
@@ -124,70 +170,79 @@ class Mamba(AbstractTrafficStateModel):
         self._logger.info(f"Enhanced Mamba model configured for device: {self.device}")
 
     def forward(self, batch):
-        """
-        Forward pass through the model
-        :param batch: Input data dictionary
-        :return: Predicted values with shape [batch_size, output_window, num_nodes, output_dim]
-        """
         x = batch['X']  # [batch_size, input_window, num_nodes, feature_dim]
-        
-        # Make sure input is on the correct device
-        x = x.to(self.device)
-        
         batch_size = x.shape[0]
         
-        # Reshape for processing each node across all batches and time steps
-        # [batch_size, input_window, num_nodes, feature_dim] -> [num_nodes, batch_size * input_window, feature_dim]
-        x = x.permute(2, 0, 1, 3).contiguous()
-        x = x.reshape(self.num_nodes, batch_size * self.input_window, self.feature_dim)
+        # STAEformer-style feature extraction
+        features = []
         
-        # Project input to model dimension
-        x = self.input_proj(x)  # [num_nodes, batch_size * input_window, d_model]
+        # Process main features
+        x_main = self.input_proj(x)  # [batch_size, input_window, num_nodes, input_embedding_dim]
+        features.append(x_main)
         
-        # Apply input layer normalization
-        x = self.input_layer_norm(x)
+        # Add time embeddings if needed
+        if self.add_time_in_day:
+            tod = x[..., -2] if self.add_day_in_week else x[..., -1]
+            # Clamp index before embedding lookup
+            tod_indices = (tod * self.steps_per_day).long()
+            tod_indices = torch.clamp(tod_indices, 0, self.steps_per_day - 1)
+            tod_emb = self.tod_embedding(tod_indices)  # [batch_size, input_window, num_nodes, tod_embedding_dim]
+            features.append(tod_emb)
+            
+        if self.add_day_in_week:
+            dow = x[..., -1]
+            # Clamp index before embedding lookup
+            dow_indices = dow.long()
+            dow_indices = torch.clamp(dow_indices, 0, 6) # Clamp to 0-6 for days of week
+            dow_emb = self.dow_embedding(dow_indices)  # [batch_size, input_window, num_nodes, dow_embedding_dim]
+            features.append(dow_emb)
         
-        # Add positional encoding - need different approach since sequence length is now batch_size * input_window
-        positions = torch.arange(0, batch_size * self.input_window, device=self.device).unsqueeze(0).expand(self.num_nodes, -1)
-        pos_encoding = self.pos_encoder(positions)
-        x = x + pos_encoding
+        # Add spatial embeddings
+        spatial_emb = self.spatial_embedding.unsqueeze(0).unsqueeze(0)  # [1, 1, num_nodes, spatial_dim]
+        spatial_emb = spatial_emb.expand(batch_size, self.input_window, -1, -1)
+        features.append(spatial_emb)
         
-        # Store layer outputs for skip connections
-        layer_outputs = []
+        # Add adaptive embeddings if enabled
+        if self.adaptive_embedding_dim > 0:
+            adp_emb = self.adaptive_embedding.unsqueeze(0)  # [1, input_window, num_nodes, adaptive_dim]
+            adp_emb = adp_emb.expand(batch_size, -1, -1, -1)
+            features.append(adp_emb)
         
-        # Process with enhanced Mamba layers
-        for layer in self.enhanced_layers:
-            x = layer(x)
-            layer_outputs.append(x)
+        # Concatenate all features
+        x = torch.cat(features, dim=-1)  # [batch_size, input_window, num_nodes, model_dim]
         
-        # Concatenate all layer outputs for skip connections
-        if len(layer_outputs) > 1:
-            concatenated = torch.cat(layer_outputs, dim=-1)
-            x = self.skip_adapter(concatenated)
+        # Project to Mamba dimension
+        x = self.mamba_input_proj(x)  # [batch_size, input_window, num_nodes, d_model]
         
-        # Apply final layer normalization
-        x = self.final_layer_norm(x)
+        # Temporal processing (process each node independently)
+        x_temporal = x.permute(2, 0, 1, 3)  # [num_nodes, batch_size, input_window, d_model]
+        x_temporal = x_temporal.reshape(self.num_nodes, batch_size * self.input_window, -1)
         
-        # Project output to feature dimension
-        x = self.output_proj(x)  # [num_nodes, batch_size * input_window, output_dim]
+        for layer in self.temporal_layers:
+            x_temporal = layer(x_temporal)
+            
+        # Reshape back: [num_nodes, batch_size, input_window, d_model]
+        x_temporal = x_temporal.reshape(self.num_nodes, batch_size, self.input_window, self.d_model)
         
-        # Reshape back to separate batch and time dimensions
-        x = x.reshape(self.num_nodes, batch_size, self.input_window, self.output_dim)
+        # Spatial processing (process each timestep independently)
+        x_spatial = x.permute(1, 0, 2, 3)  # [input_window, batch_size, num_nodes, d_model]
+        x_spatial = x_spatial.reshape(self.input_window, batch_size * self.num_nodes, -1)
         
-        # Take the last 'output_window' steps for each batch
-        if self.input_window >= self.output_window:
-            x = x[:, :, -self.output_window:, :]  # [num_nodes, batch_size, output_window, output_dim]
-        else:
-            # Need to generate predictions beyond input window for each node
-            # This is a simplified approach - for proper implementation, you'd need to rework the autoregressive generation
-            last_points = x[:, :, -1:, :]  # [num_nodes, batch_size, 1, output_dim]
-            extended_predictions = last_points.repeat(1, 1, self.output_window - self.input_window, 1)
-            x = torch.cat([x[:, :, :self.input_window, :], extended_predictions], dim=2)  # [num_nodes, batch_size, output_window, output_dim]
+        for layer in self.spatial_layers:
+            x_spatial = layer(x_spatial)
+            
+        # Reshape back: [input_window, batch_size, num_nodes, d_model]
+        x_spatial = x_spatial.reshape(self.input_window, batch_size, self.num_nodes, self.d_model)
         
-        # Final reshape to expected output format
-        x = x.permute(1, 2, 0, 3).contiguous()  # [batch_size, output_window, num_nodes, output_dim]
+        # Combine temporal and spatial outputs
+        x_combined = (x_temporal.permute(1, 2, 0, 3) * self.combine_weights[0] +
+                      x_spatial.permute(1, 0, 2, 3) * self.combine_weights[1])
         
-        return x
+        # Final processing and output projection
+        x_out = self.final_layer_norm(x_combined)
+        x_out = self.output_proj(x_out)
+        
+        return x_out[:, -self.output_window:]  # Return last output_window steps
 
     def calculate_loss(self, batch):
         """
@@ -212,27 +267,3 @@ class Mamba(AbstractTrafficStateModel):
         :return: Predictions with shape [batch_size, output_window, num_nodes, output_dim]
         """
         return self.forward(batch)
-
-    def check_gpu_usage(self):
-        """
-        Method to check and log whether the model is actually using the GPU
-        """
-        # Create a small test tensor
-        test_tensor = torch.randn(1, 1, self.feature_dim)
-        test_tensor = test_tensor.to(self.device)
-        
-        # Check device of model components
-        self._logger.info(f"Device of input_proj weight: {self.input_proj.weight.device}")
-        self._logger.info(f"Device of output_proj weight: {self.output_proj.weight.device}")
-        for i, layer in enumerate(self.enhanced_layers):
-            self._logger.info(f"Device of enhanced_layer {i} first parameter: {next(layer.parameters()).device}")
-        self._logger.info(f"Device of test tensor: {test_tensor.device}")
-        
-        # Try a forward pass with the test tensor and check output device
-        with torch.no_grad():
-            self.input_proj.eval()
-            out = self.input_proj(test_tensor)
-            self._logger.info(f"Device of output from input_proj: {out.device}")
-        
-        # Return True if all components are on the correct device
-        return all(p.device == self.device for p in self.parameters())

@@ -1,227 +1,215 @@
-# Mamba Model for Traffic Speed Prediction
+# Enhanced Mamba Model for Traffic Speed Prediction
 
-This document provides a comprehensive guide to the Mamba model for traffic speed prediction using state space models (SSMs).
+This document provides a guide to the enhanced Mamba model for traffic speed prediction, featuring dual temporal/spatial processing paths and advanced embeddings.
 
 ## TL;DR: Quick Start Guide
 
-To quickly run the Mamba model and see results:
+To quickly run the enhanced Mamba model:
 
-1. **Navigate to the LibCity root directory**:
-   ```bash
-   cd path/to/Bigscity-LibCity
-   ```
+1.  **Navigate to the LibCity root directory**:
+    ```bash
+    cd path/to/Bigscity-LibCity
+    ```
 
-2. **Run the model with default configuration**:
-   ```bash
-   python run_model.py --task traffic_state_pred --model Mamba --dataset PEMSD8
-   ```
+2.  **Run the model with the default configuration**:
+    ```bash
+    python run_model.py --task traffic_state_pred --model Mamba --dataset PEMSD8
+    ```
+    *This uses the configuration in `libcity/config/model/traffic_state_pred/Mamba.json`, which includes settings for embeddings.*
 
-3. **View results**: Check the output directory for evaluation metrics and predictions:
-   ```bash
-   cd libcity/cache/Mamba_PEMSD8_*/evaluate_cache/
-   ```
+3.  **View results**: Check the output directory for evaluation metrics and predictions:
+    ```bash
+    cd libcity/cache/Mamba_PEMSD8_*/evaluate_cache/
+    ```
 
 ## Detailed Guide: Running with Custom Parameters
 
 ### Configuration Options
 
-You can customize the Mamba model by modifying its configuration file or passing parameters via command line:
+Customize the model via its configuration file or command-line arguments:
 
-1. **Edit the configuration file**: 
-   - Located at: `libcity/config/model/traffic_state_pred/Mamba.json`
-   - Key parameters:
-     ```json
-     {
-       "d_model": 16,       // Hidden dimension size of the model
-       "d_state": 16,       // State size in the SSM
-       "d_conv": 4,         // Kernel size for the local convolution
-       "expand": 2,         // Expansion factor for the hidden dimension
-       "num_layers": 5,     // Number of stacked Mamba layers
-       "max_epoch": 100,    // Maximum training epochs
-       "learner": "adam",   // Optimizer
-       "learning_rate": 0.001, // Learning rate
-       "input_window": 12,  // Number of time steps for input
-       "output_window": 12, // Number of time steps to predict
-       "executor": "MambaExecutor" // Executor class
-     }
-     ```
+1.  **Edit the configuration file**:
+    -   Located at: `libcity/config/model/traffic_state_pred/Mamba.json`
+    -   Key parameters include Mamba settings (`d_model`, `d_state`, `d_conv`, `expand`, `num_layers`), training parameters (`max_epoch`, `learning_rate`), and **embedding dimensions** (`input_embedding_dim`, `tod_embedding_dim`, `dow_embedding_dim`, `spatial_embedding_dim`, `adaptive_embedding_dim`).
 
-2. **Run with custom configuration file**:
-   ```bash
-   python run_model.py --task traffic_state_pred --model Mamba --dataset PEMSD8 --config_file custom_mamba_config.json
-   ```
+    ```json
+    {
+      "d_model": 96,        // Hidden dimension size for Mamba blocks
+      "d_state": 32,        // State size in the SSM
+      "d_conv": 4,          // Kernel size for the local convolution
+      "expand": 2,          // Expansion factor for the hidden dimension
+      "num_layers": 3,      // Number of stacked EnhancedMambaLayers per path
+      "dropout": 0.1,       // Dropout rate
+      "max_epoch": 100,     // Maximum training epochs
+      "batch_size": 64,
+      "learner": "adam",
+      "learning_rate": 0.001,
+      "input_window": 12,   // Number of time steps for input
+      "output_window": 12,  // Number of time steps to predict
+      "executor": "MambaExecutor",
+      // Embedding Configs (STAEformer-style)
+      "input_embedding_dim": 24,
+      "tod_embedding_dim": 24,
+      "dow_embedding_dim": 24,
+      "spatial_embedding_dim": 16,
+      "adaptive_embedding_dim": 80,
+      "add_time_in_day": true,   // Enable time-of-day embeddings
+      "add_day_in_week": true,   // Enable day-of-week embeddings
+      "steps_per_day": 288      // Needed for time-of-day embedding size
+      // ... other training parameters
+    }
+    ```
 
-3. **Pass parameters directly**:
-   ```bash
-   python run_model.py --task traffic_state_pred --model Mamba --dataset PEMSD8 --d_model 64 --d_state 32 --num_layers 8
-   ```
+2.  **Run with a custom configuration file**:
+    ```bash
+    python run_model.py --task traffic_state_pred --model Mamba --dataset PEMSD8 --config_file path/to/your/custom_mamba_config.json
+    ```
 
-### Advanced Customization
+3.  **Pass parameters directly via command line**:
+    ```bash
+    python run_model.py --task traffic_state_pred --model Mamba --dataset PEMSD8 --d_model 128 --d_state 64 --num_layers 4 --dropout 0.15
+    ```
 
-For more advanced customization:
+## Comprehensive Architecture Review: Enhanced Mamba
 
-1. **Create a custom dataset configuration**:
-   - Located at: `libcity/config/data/PEMSD8.json`
-   - Adjust preprocessing parameters like data splitting and normalization
-
-2. **Modify the training process**:
-   - Batch size, learning rate, and training schedules can be adjusted
-   - Example:
-     ```bash
-     python run_model.py --task traffic_state_pred --model Mamba --dataset PEMSD8 --batch_size 64 --learning_rate 0.0005 --max_epoch 150
-     ```
-
-3. **Experiment with different model sizes**:
-   - For better accuracy (but slower training):
-     ```bash
-     python run_model.py --task traffic_state_pred --model Mamba --dataset PEMSD8 --d_model 96 --d_state 32 --num_layers 8
-     ```
-   - For faster training (but potentially lower accuracy):
-     ```bash
-     python run_model.py --task traffic_state_pred --model Mamba --dataset PEMSD8 --d_model 32 --d_state 16 --num_layers 3
-     ```
-
-## Comprehensive Architecture Review
-
-The Mamba model is designed for spatiotemporal traffic speed prediction using state space models (SSMs). Let's break down each component:
+The enhanced Mamba model integrates STAEformer-style embeddings and uses parallel processing paths for temporal and spatial information.
 
 ### Core Components
 
-#### 1. State Space Model (MambaSSM)
+#### 1. STAEformer-style Embeddings
 
-The heart of the model is the Mamba SSM (State Space Model), which processes sequential data efficiently:
+The model first processes input features using various embeddings:
 
 ```python
-self.mamba_layers = nn.ModuleList([
-    MambaSSM(
-        d_model=self.d_model,
-        d_state=self.d_state,
-        d_conv=self.d_conv,
-        expand=self.expand
-    ) for _ in range(self.num_layers)
-])
+# In __init__
+self.input_proj = nn.Linear(self.feature_dim, self.input_embedding_dim)
+if self.add_time_in_day:
+    self.tod_embedding = nn.Embedding(self.steps_per_day, self.tod_embedding_dim)
+if self.add_day_in_week:
+    self.dow_embedding = nn.Embedding(7, self.dow_embedding_dim)
+self.spatial_embedding = nn.Parameter(...) # Learnable spatial embedding per node
+if self.adaptive_embedding_dim > 0:
+    self.adaptive_embedding = nn.Parameter(...) # Learnable adaptive embedding per time-step/node
+
+# In forward
+features = []
+x_main = self.input_proj(x)
+features.append(x_main)
+# Append tod_emb, dow_emb, spatial_emb, adp_emb if enabled
+x = torch.cat(features, dim=-1) # Concatenate all embeddings
 ```
 
-**What it does**: Processes temporal patterns in the data using an efficient state space formulation.
+-   **Input Embedding**: Projects raw features (`feature_dim`) to `input_embedding_dim`.
+-   **Time Embeddings**: Optional embeddings for time-of-day (`tod_embedding`) and day-of-week (`dow_embedding`).
+-   **Spatial Embedding**: Learnable vector for each node, capturing static spatial characteristics.
+-   **Adaptive Embedding**: Learnable vector for each input time step and node, capturing dynamic spatiotemporal context.
+-   **Concatenation**: All enabled embeddings are concatenated to form the initial representation (`model_dim`).
 
-**Why it's added**: Mamba provides a more efficient alternative to traditional attention mechanisms while maintaining the ability to model long-range dependencies.
+#### 2. Projection to Mamba Dimension
 
-**How it works**: 
-- Models a continuous-time linear system using a discretized state space approach
-- Uses selective scanning to reduce computational complexity
-- The internal mechanism uses a combination of convolution and state updates that allow the model to selectively remember or forget information
-
-#### 2. Layer Normalization
-
-Layer normalization is applied after each Mamba layer:
+The concatenated embeddings (`model_dim`) are projected to the Mamba working dimension (`d_model`):
 
 ```python
-self.layer_norms = nn.ModuleList([
-    nn.LayerNorm(self.d_model) for _ in range(self.num_layers)
-])
+self.mamba_input_proj = nn.Linear(self.model_dim, self.d_model)
+x = self.mamba_input_proj(x)
 ```
 
-**What it does**: Normalizes the outputs of each layer to improve training stability.
+#### 3. Dual Processing Paths (Temporal & Spatial)
 
-**Why it's added**: Helps with gradient flow and speeds up convergence by normalizing activations.
-
-**How it works**: Normalizes the features across the feature dimension for each sample independently, maintaining a mean of 0 and standard deviation of 1.
-
-#### 3. Input and Output Projections
-
-The model includes projections to transform between feature spaces:
+The model processes the data through two parallel sets of `EnhancedMambaLayer` stacks:
 
 ```python
-self.input_proj = nn.Linear(self.feature_dim, self.d_model)
+# In __init__
+self.temporal_layers = nn.ModuleList([...]) # Stack of EnhancedMambaLayer
+self.spatial_layers = nn.ModuleList([...])  # Another stack of EnhancedMambaLayer
+
+# In forward
+# Temporal Path (processes each node's time series independently)
+x_temporal = x.permute(...) # Reshape: [num_nodes, batch*time, d_model]
+for layer in self.temporal_layers:
+    x_temporal = layer(x_temporal)
+x_temporal = x_temporal.reshape(...) # Reshape back
+
+# Spatial Path (processes each time step's spatial graph independently)
+x_spatial = x.permute(...) # Reshape: [time, batch*num_nodes, d_model]
+for layer in self.spatial_layers:
+    x_spatial = layer(x_spatial)
+x_spatial = x_spatial.reshape(...) # Reshape back
+```
+
+-   **Temporal Path**: Focuses on patterns *over time* for each sensor independently.
+-   **Spatial Path**: Focuses on patterns *across sensors* at each time step independently.
+
+#### 4. EnhancedMambaLayer
+
+Each layer in the temporal and spatial paths is an `EnhancedMambaLayer`:
+
+```python
+# Inside EnhancedMambaLayer
+self.mamba1 = MambaSSM(...)
+self.mamba2 = MambaSSM(...)
+self.feed_forward = nn.Sequential(...)
+# Forward pass includes LayerNorm, Dropout, and Residual Connections for each block
+```
+
+-   **Structure**: Contains two Mamba blocks and a feed-forward network, each preceded by Layer Normalization and followed by Dropout and a residual connection.
+-   **Purpose**: Allows for deeper feature extraction within each processing path compared to a single Mamba block.
+
+#### 5. Weighted Combination
+
+The outputs from the temporal and spatial paths are combined using learnable weights:
+
+```python
+self.combine_weights = nn.Parameter(torch.randn(2, self.d_model))
+x_combined = (x_temporal.permute(...) * self.combine_weights[0] +
+              x_spatial.permute(...) * self.combine_weights[1])
+```
+
+-   **Mechanism**: A weighted sum where the model learns the importance of temporal vs. spatial features.
+
+#### 6. Final Output Processing
+
+The combined representation is passed through a final Layer Normalization and an output projection:
+
+```python
+self.final_layer_norm = nn.LayerNorm(self.d_model)
 self.output_proj = nn.Linear(self.d_model, self.output_dim)
+
+x_out = self.final_layer_norm(x_combined)
+x_out = self.output_proj(x_out)
 ```
 
-**What it does**: Maps the input features to the model's internal dimension and transforms the model outputs back to the prediction space.
+-   **Normalization**: Stabilizes the final combined features.
+-   **Projection**: Maps the internal `d_model` dimension to the desired `output_dim`.
+-   **Window Selection**: The final output selects only the required `output_window` time steps.
 
-**Why it's added**: The model works with a fixed internal dimension that may differ from the input/output dimensions.
+### Data Flow Summary
 
-**How it works**: Simple linear transformations (matrix multiplications) to change the dimensionality of the data.
-
-#### 4. Residual Connections
-
-Residual connections are implemented in the forward pass:
-
-```python
-if i > 0:
-    x = x + mamba_output
-else:
-    x = mamba_output
-```
-
-**What it does**: Creates shortcuts that allow gradients to flow more easily through the network.
-
-**Why it's added**: Helps combat the vanishing gradient problem in deep networks and improves training.
-
-**How it works**: Adds the input of a layer directly to its output, creating a path for gradients to bypass layers.
-
-### Data Flow
-
-The model transforms input data through several steps:
-
-1. **Input Reshaping**: 
-   ```python
-   x = x.permute(0, 2, 1, 3).contiguous()
-   x = x.reshape(batch_size * self.num_nodes, self.input_window, self.feature_dim)
-   ```
-   This preserves spatial structure by processing each node separately.
-
-2. **Feature Projection**:
-   ```python
-   x = self.input_proj(x)
-   ```
-   Maps input features to model dimensions.
-
-3. **Sequential Processing**:
-   The data flows through multiple Mamba layers with layer normalization and residual connections.
-
-4. **Output Generation**:
-   ```python
-   x = self.output_proj(x)
-   x = x[:, -self.output_window:, :]
-   ```
-   Projects to output dimension and selects the prediction window.
-
-5. **Output Reshaping**:
-   ```python
-   x = x.reshape(batch_size, self.num_nodes, self.output_window, self.output_dim)
-   x = x.permute(0, 2, 1, 3).contiguous()
-   ```
-   Transforms back to the expected output format.
-
-### Key Innovations
-
-1. **Node-wise Processing**: The model preserves spatial structure by processing each node separately, which helps capture node-specific temporal patterns.
-
-2. **Stacked Architecture**: Multiple Mamba layers are stacked to capture increasingly complex patterns in the data.
-
-3. **Efficient Sequence Modeling**: The Mamba SSM provides an efficient alternative to attention for modeling long sequences.
+1.  Input `[batch, time, nodes, features]`
+2.  Generate embeddings (Input, Time, Spatial, Adaptive).
+3.  Concatenate embeddings `[batch, time, nodes, model_dim]`.
+4.  Project to Mamba dimension `[batch, time, nodes, d_model]`.
+5.  **Parallel Paths**:
+    -   Temporal Path: Process `[nodes, batch*time, d_model]` through `temporal_layers`.
+    -   Spatial Path: Process `[time, batch*nodes, d_model]` through `spatial_layers`.
+6.  Combine temporal and spatial outputs using learned weights `[batch, time, nodes, d_model]`.
+7.  Final Layer Normalization.
+8.  Project to output dimension `[batch, time, nodes, output_dim]`.
+9.  Select prediction window `[batch, output_window, nodes, output_dim]`.
 
 ### Loss Function
 
-The model uses masked MAE loss for training:
+Uses masked Mean Absolute Error (MAE) loss, suitable for traffic data which may contain missing values:
 
 ```python
 loss.masked_mae_torch(y_predicted, y_true, 0)
 ```
 
-**What it does**: Calculates the Mean Absolute Error while ignoring masked values.
+### Design Philosophy
 
-**Why it's added**: Traffic data often contains missing values that should be excluded from loss calculation.
+-   **Hybrid Approach**: Combines the sequence modeling strengths of Mamba with rich, context-aware embeddings inspired by STAEformer.
+-   **Parallel Processing**: Explicitly models temporal and spatial dependencies in separate pathways.
+-   **Adaptive Combination**: Learns to weigh the importance of temporal vs. spatial information dynamically.
+-   **Enhanced Blocks**: Uses a deeper Mamba block (`EnhancedMambaLayer`) for potentially better feature extraction within each path.
 
-**How it works**: Computes the absolute difference between predictions and ground truth, applies a mask to ignore certain values, and takes the mean.
-
-### Overall Design Philosophy
-
-The Mamba model is designed with efficiency and effectiveness in mind:
-
-1. **Spatiotemporal Modeling**: Preserves both temporal and spatial aspects of traffic data
-2. **Scalability**: Efficiently handles long sequences and multiple nodes
-3. **Deep Architecture**: Uses multiple layers for hierarchical feature extraction
-4. **Stability**: Employs normalization and residual connections for stable training
-
-This architecture makes it well-suited for traffic speed prediction tasks, where capturing both temporal patterns and spatial relationships is crucial. 
+This enhanced architecture aims to capture complex spatiotemporal dynamics effectively by leveraging specialized embeddings and parallel processing streams. 
