@@ -67,9 +67,6 @@ class MambaCoder(AbstractTrafficStateModel):
         self.add_day_in_week = config.get("add_day_in_week", False)
         self.steps_per_day = config.get("steps_per_day", 288)
         
-        # Log dataset information
-        self._logger.info(f"Dataset has {self.feature_dim} feature channel(s) and {self.num_nodes} nodes")
-        
         # Get embedding dimensions from config
         self.input_embedding_dim = config.get('input_embedding_dim', 24)
         self.tod_embedding_dim = config.get('tod_embedding_dim', 24) if self.add_time_in_day else 0
@@ -91,7 +88,6 @@ class MambaCoder(AbstractTrafficStateModel):
         
         if self.add_time_in_day:
             self.tod_embedding = nn.Embedding(self.steps_per_day, self.tod_embedding_dim)
-            
         if self.add_day_in_week:
             self.dow_embedding = nn.Embedding(7, self.dow_embedding_dim)
         
@@ -167,8 +163,7 @@ class MambaCoder(AbstractTrafficStateModel):
         # Add time embeddings if needed
         if self.add_time_in_day:
             # Create normalized time of day (0-1) based on position in sequence
-            # This simulates the same approach as in the original implementation
-            # but works with any dataset regardless of feature dimensions
+            # This works with any dataset regardless of feature dimensions
             tod = torch.linspace(0, 0.99, self.input_window, device=self.device)
             # Reshape to [1, input_window, 1] and expand to [batch_size, input_window, num_nodes]
             tod = tod.reshape(1, -1, 1).expand(batch_size, -1, self.num_nodes)
@@ -181,12 +176,11 @@ class MambaCoder(AbstractTrafficStateModel):
             
         if self.add_day_in_week:
             # Create day of week (0-6) based on position in sequence
-            # This simulates the same approach as in the original implementation
             dow = torch.arange(0, self.input_window, device=self.device) % 7
             # Reshape to [1, input_window, 1] and expand to [batch_size, input_window, num_nodes]
             dow = dow.reshape(1, -1, 1).expand(batch_size, -1, self.num_nodes)
             
-            # Convert to indices exactly like the original implementation
+            # Convert to indices
             dow_indices = dow.long()
             dow_indices = torch.clamp(dow_indices, 0, 6)  # Clamp to 0-6 for days of week
             dow_emb = self.dow_embedding(dow_indices)  # [batch_size, input_window, num_nodes, dow_embedding_dim]
@@ -236,9 +230,9 @@ class MambaCoder(AbstractTrafficStateModel):
                 # Calculate effective batch size
                 effective_batch_size = 1
                 
-                if t == 0:  # Only log once
-                    self._logger.info(f"Using effective batch size of {effective_batch_size} for spatial processing "
-                                   f"(dataset has {self.num_nodes} nodes)")
+                # if t == 0:  # Only log once
+                #     self._logger.info(f"Using effective batch size of {effective_batch_size} for spatial processing "
+                #                    f"(dataset has {self.num_nodes} nodes)")
                 
                 # Process batches
                 all_results = []

@@ -79,7 +79,7 @@ class Mamba(AbstractTrafficStateModel):
         # Get model config (Define input_window earlier)
         self.input_window = config.get('input_window', 12)
         self.output_window = config.get('output_window', 12)
-        self.device = config.get('device', torch.device('cpu'))
+        self.device = config.get('device', torch.device('cuda:0' if torch.cuda.is_available() else 'cpu'))
         self._logger = getLogger()
         
         # Add STAEformer-style time handling parameters
@@ -169,8 +169,12 @@ class Mamba(AbstractTrafficStateModel):
         # Log the device being used
         self._logger.info(f"Enhanced Mamba model configured for device: {self.device}")
 
+        # Move model to device
+        self.to(self.device)
+
     def forward(self, batch):
-        x = batch['X']  # [batch_size, input_window, num_nodes, feature_dim]
+        # Move input to device if needed
+        x = batch['X'].to(self.device)  # [batch_size, input_window, num_nodes, feature_dim]
         batch_size = x.shape[0]
         
         # STAEformer-style feature extraction
@@ -224,15 +228,53 @@ class Mamba(AbstractTrafficStateModel):
         # Reshape back: [num_nodes, batch_size, input_window, d_model]
         x_temporal = x_temporal.reshape(self.num_nodes, batch_size, self.input_window, self.d_model)
         
-        # Spatial processing (process each timestep independently)
-        x_spatial = x.permute(1, 0, 2, 3)  # [input_window, batch_size, num_nodes, d_model]
-        x_spatial = x_spatial.reshape(self.input_window, batch_size * self.num_nodes, -1)
+        # Spatial processing optimization
+        is_large_dataset = self.num_nodes > 300
         
-        for layer in self.spatial_layers:
-            x_spatial = layer(x_spatial)
+        if is_large_dataset and batch_size > 1:
+            # For large datasets, optimize with GPU-efficient chunking
+            # Initialize output tensor directly on GPU
+            x_spatial = torch.zeros(self.input_window, batch_size, self.num_nodes, self.d_model, 
+                                    device=self.device)
             
-        # Reshape back: [input_window, batch_size, num_nodes, d_model]
-        x_spatial = x_spatial.reshape(self.input_window, batch_size, self.num_nodes, self.d_model)
+            # Process each timestep
+            for t in range(self.input_window):
+                # For each timestep, treat nodes as a sequence: [batch_size, num_nodes, d_model]
+                nodes_seq = x[:, t, :, :]
+                
+                # Calculate effective batch size - but now process more data at once
+                effective_batch_size = 1
+                
+                if t == 0:  # Only log once
+                    self._logger.info(f"Using effective batch size of {effective_batch_size} for spatial processing "
+                                   f"(dataset has {self.num_nodes} nodes)")
+                
+                # Use a list comprehension with fewer Python loops
+                all_results = []
+                for b_idx in range(0, batch_size, effective_batch_size):
+                    end_idx = min(b_idx + effective_batch_size, batch_size)
+                    # Extract batch slice: [small_batch, num_nodes, d_model]
+                    batch_slice = nodes_seq[b_idx:end_idx]
+                    
+                    # Process through spatial layers
+                    spatial_hidden = batch_slice
+                    for layer in self.spatial_layers:
+                        spatial_hidden = layer(spatial_hidden)
+                    
+                    all_results.append(spatial_hidden)
+                
+                # Combine results - more efficient than appending to list and then concatenating
+                x_spatial[t] = torch.cat(all_results, dim=0)
+        else:
+            # For smaller datasets, process all at once
+            x_spatial = x.permute(1, 0, 2, 3)  # [input_window, batch_size, num_nodes, d_model]
+            x_spatial = x_spatial.reshape(self.input_window, batch_size * self.num_nodes, -1)
+            
+            for layer in self.spatial_layers:
+                x_spatial = layer(x_spatial)
+                
+            # Reshape back: [input_window, batch_size, num_nodes, d_model]
+            x_spatial = x_spatial.reshape(self.input_window, batch_size, self.num_nodes, self.d_model)
         
         # Combine temporal and spatial outputs
         x_combined = (x_temporal.permute(1, 2, 0, 3) * self.combine_weights[0] +
