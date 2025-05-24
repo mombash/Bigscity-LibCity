@@ -252,43 +252,96 @@ class TrafficStateExecutor(AbstractExecutor):
 
     def evaluate(self, test_dataloader):
         """
-        use model to test data and save visualizations
+        use model to test data, calculate metrics, and save visualizations & predictions.
+        Increases robustness by handling errors in sub-steps like visualization or file saving.
 
         Args:
             test_dataloader(torch.Dataloader): Dataloader
         """
         self._logger.info('Start evaluating ...')
+        y_truths, y_preds = [], []
+        prediction_failed_batches = 0
+        visualization_failed_batches = 0
+        total_batches = len(test_dataloader)
+
         with torch.no_grad():
             self.model.eval()
-            y_truths = []
-            y_preds = []
             for batch_idx, batch in enumerate(test_dataloader):
-                batch.to_tensor(self.device)
-                output = self.model.predict(batch)
-                y_true = self._scaler.inverse_transform(batch['y'][..., :self.output_dim])
-                y_pred = self._scaler.inverse_transform(output[..., :self.output_dim])
-                
-                # Save visualizations for this batch
-                self.visualize_predictions(y_true.cpu().numpy(), 
-                                        y_pred.cpu().numpy(), 
-                                        batch_idx)
-                
-                y_truths.append(y_true.cpu().numpy())
-                y_preds.append(y_pred.cpu().numpy())
-                # evaluate_input = {'y_true': y_true, 'y_pred': y_pred}
-                # self.evaluator.collect(evaluate_input)
-            # self.evaluator.save_result(self.evaluate_res_dir)
-            y_preds = np.concatenate(y_preds, axis=0)
-            y_truths = np.concatenate(y_truths, axis=0)  # concatenate on batch
-            outputs = {'prediction': y_preds, 'truth': y_truths}
-            filename = \
-                time.strftime("%Y_%m_%d_%H_%M_%S", time.localtime(time.time())) + '_' \
-                + self.config['model'] + '_' + self.config['dataset'] + '_predictions.npz'
-            np.savez_compressed(os.path.join(self.evaluate_res_dir, filename), **outputs)
+                try:
+                    # 1. Predict and Scale
+                    batch.to_tensor(self.device)
+                    output = self.model.predict(batch)
+                    # Ensure slicing uses self.output_dim consistently
+                    y_true_scaled = self._scaler.inverse_transform(batch['y'][..., :self.output_dim])
+                    y_pred_scaled = self._scaler.inverse_transform(output[..., :self.output_dim])
+                    
+                    # Ensure outputs are numpy for visualization and aggregation
+                    y_true_np = y_true_scaled.cpu().numpy()
+                    y_pred_np = y_pred_scaled.cpu().numpy()
+
+                except Exception as e:
+                    self._logger.error(f"Error during prediction/scaling for batch {batch_idx}: {e}")
+                    prediction_failed_batches += 1
+                    continue # Skip this batch if prediction/scaling fails
+
+                # 2. Visualize (already has internal try-except from previous edit)
+                try:
+                    self.visualize_predictions(y_true_np, y_pred_np, batch_idx)
+                except Exception as e:
+                    # Catch potential unexpected errors during the call itself.
+                    self._logger.error(f"Unexpected error calling visualize_predictions for batch {batch_idx}: {e}")
+                    visualization_failed_batches += 1
+                    # Continue evaluation even if visualization fails
+
+                # 3. Aggregate Results
+                y_truths.append(y_true_np)
+                y_preds.append(y_pred_np)
+
+        # Log batch-level failures
+        if prediction_failed_batches > 0:
+            self._logger.warning(f"Prediction/scaling failed for {prediction_failed_batches}/{total_batches} batches.")
+        if visualization_failed_batches > 0:
+            self._logger.warning(f"Visualization failed or errored for {visualization_failed_batches}/{total_batches} batches.")
+
+        # Check if any results were collected
+        if not y_truths or not y_preds:
+            self._logger.error("Evaluation failed: No results collected, possibly due to errors in all batches.")
+            return None # Indicate failure
+
+        # 4. Concatenate Results
+        try:
+            y_preds_concat = np.concatenate(y_preds, axis=0)
+            y_truths_concat = np.concatenate(y_truths, axis=0)
+        except Exception as e:
+            self._logger.error(f"Failed to concatenate evaluation results: {e}")
+            return None # Cannot proceed without concatenated results
+
+        # 5. Save Predictions (.npz)
+        try:
+            outputs = {'prediction': y_preds_concat, 'truth': y_truths_concat}
+            filename = time.strftime("%Y_%m_%d_%H_%M_%S", time.localtime(time.time())) + '_' \
+                       + self.config['model'] + '_' + self.config['dataset'] + '_predictions.npz'
+            filepath = os.path.join(self.evaluate_res_dir, filename)
+            np.savez_compressed(filepath, **outputs)
+            self._logger.info(f"Saved predictions to {filepath}")
+        except Exception as e:
+            self._logger.error(f"Failed to save predictions npz file at {filepath}: {e}")
+            # Continue to metric calculation even if saving predictions fails
+
+        # 6. Calculate and Save Metrics using Evaluator
+        test_result = None
+        try:
             self.evaluator.clear()
-            self.evaluator.collect({'y_true': torch.tensor(y_truths), 'y_pred': torch.tensor(y_preds)})
+            # Ensure data passed to evaluator is torch tensor
+            self.evaluator.collect({'y_true': torch.tensor(y_truths_concat), 'y_pred': torch.tensor(y_preds_concat)})
             test_result = self.evaluator.save_result(self.evaluate_res_dir)
-            return test_result
+            self._logger.info(f"Evaluation metrics calculated and saved to {self.evaluate_res_dir}")
+        except Exception as e:
+            self._logger.error(f"Failed to calculate or save evaluation metrics: {e}")
+            # Return None as the primary goal (metrics) failed.
+            return None 
+
+        return test_result
 
     def visualize_predictions(self, y_true, y_pred, batch_idx):
         """
@@ -299,26 +352,48 @@ class TrafficStateExecutor(AbstractExecutor):
             y_pred (numpy.ndarray): Predicted values shape (batch_size, timesteps, nodes, metrics)
             batch_idx (int): Batch index for filename
         """
+        # Ensure y_true and y_pred are numpy arrays
+        if isinstance(y_true, torch.Tensor):
+            y_true = y_true.cpu().numpy()
+        if isinstance(y_pred, torch.Tensor):
+            y_pred = y_pred.cpu().numpy()
+
+        if y_true.shape[0] == 0 or y_true.shape[2] == 0:
+             self._logger.warning(f"Skipping visualization for batch {batch_idx}: Empty batch or node dimension.")
+             return
+
         # Select one random sample from the batch
         sample_idx = np.random.randint(0, y_true.shape[0])
         # Select one random node
         node_idx = np.random.randint(0, y_true.shape[2])
         
-        # Create one plot with all 3 features
-        plt.figure(figsize=(15, 5))
+        num_metrics = y_true.shape[-1] # Get the actual number of metrics
+        if num_metrics == 0:
+            self._logger.warning(f"Skipping visualization for batch {batch_idx}, sample {sample_idx}, node {node_idx}: No metrics found (output_dim is likely 0).")
+            return
+
+        # Create one plot with subplots for each metric
+        fig_width = 5 * num_metrics
+        plt.figure(figsize=(fig_width, 5))
         
         # Get the data for the selected sample and node
         true_sample = y_true[sample_idx, :, node_idx, :]  # shape (timesteps, metrics)
         pred_sample = y_pred[sample_idx, :, node_idx, :]  # shape (timesteps, metrics)
         
-        feature_names = ['Traffic Flow', 'Traffic Occupancy', 'Traffic Speed']
-        
         # Plot each metric
-        for metric_idx in range(3):
-            plt.subplot(1, 3, metric_idx + 1)
+        for metric_idx in range(num_metrics):
+            plt.subplot(1, num_metrics, metric_idx + 1)
+            # Check if true_sample or pred_sample have the expected dimension
+            if true_sample.ndim < 2 or pred_sample.ndim < 2:
+                 self._logger.warning(f"Skipping visualization plot for metric {metric_idx} due to unexpected data dimensions. True shape: {true_sample.shape}, Pred shape: {pred_sample.shape}")
+                 continue
+            if true_sample.shape[1] <= metric_idx or pred_sample.shape[1] <= metric_idx:
+                self._logger.warning(f"Skipping visualization plot for metric {metric_idx} due to insufficient columns. True shape: {true_sample.shape}, Pred shape: {pred_sample.shape}")
+                continue
+
             plt.plot(true_sample[:, metric_idx], label='Ground Truth', marker='o')
             plt.plot(pred_sample[:, metric_idx], label='Prediction', marker='x')
-            plt.title(f'{feature_names[metric_idx]}\nNode {node_idx}')
+            plt.title(f'Metric {metric_idx + 1}\\nNode {node_idx}') # Use generic metric name
             plt.xlabel('Time Step')
             plt.ylabel('Value')
             plt.legend()
@@ -327,8 +402,12 @@ class TrafficStateExecutor(AbstractExecutor):
         plt.tight_layout()
         # Save the figure
         filename = f'batch_{batch_idx}_sample_{sample_idx}_node_{node_idx}.png'
-        plt.savefig(os.path.join(self.visualization_dir, filename))
-        plt.close()
+        filepath = os.path.join(self.visualization_dir, filename)
+        try:
+             plt.savefig(filepath)
+        except Exception as e:
+             self._logger.error(f"Failed to save visualization figure {filepath}: {e}")
+        plt.close() # Close the figure to free memory
         
         if batch_idx % 10 == 0:  # Log every 10 batches
             self._logger.info(f'Saved visualizations for batch {batch_idx}')

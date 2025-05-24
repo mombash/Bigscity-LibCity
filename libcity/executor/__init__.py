@@ -21,6 +21,11 @@ from libcity.executor.megacrn_executor import MegaCRNExecutor
 from libcity.executor.trafformer_executor import TrafformerExecutor
 from libcity.executor.pdformer_executor import PDFormerExecutor
 from libcity.executor.astgnn_executor import ASTGNNExecutor
+# Comment out imports that don't exist
+# from libcity.executor.traffic_accident_executor import TrafficAccidentExecutor
+# from libcity.executor.eta_executor import EtaExecutor
+# from libcity.executor.road_representation_executor import RoadRepresentationExecutor
+from libcity.executor.autoregressive_executor import AutoregressiveExecutor
 
 __all__ = [
     "TrajLocPredExecutor",
@@ -46,4 +51,8 @@ __all__ = [
     "TrafformerExecutor",
     "PDFormerExecutor",
     "ASTGNNExecutor",
+    # "TrafficAccidentExecutor",
+    # "EtaExecutor",
+    # "RoadRepresentationExecutor",
+    "AutoregressiveExecutor",
 ]

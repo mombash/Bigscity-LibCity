@@ -214,13 +214,18 @@ class STAEformer(AbstractTrafficStateModel):
         x = self.input_proj(x)  # (batch_size, in_steps, num_nodes, input_embedding_dim)
         features = [x]
         if self.add_time_in_day:
+            tod_indices = (tod * self.steps_per_day).long()
+            # Clamp indices to be within the valid range [0, steps_per_day - 1]
+            tod_indices = torch.clamp(tod_indices, 0, self.steps_per_day - 1)
             tod_emb = self.tod_embedding(
-                (tod * self.steps_per_day).long()
+                tod_indices
             )  # (batch_size, in_steps, num_nodes, tod_embedding_dim)
             features.append(tod_emb)
         if self.add_day_in_week:
+            # Ensure dow indices are within valid range [0, 6] (optional clamping for safety)
+            dow_indices = torch.clamp(dow.long(), 0, 6)
             dow_emb = self.dow_embedding(
-                dow.long()
+                dow_indices
             )  # (batch_size, in_steps, num_nodes, dow_embedding_dim)
             features.append(dow_emb)
         if self.spatial_embedding_dim > 0:
