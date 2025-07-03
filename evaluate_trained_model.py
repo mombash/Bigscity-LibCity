@@ -4,6 +4,15 @@ This script evaluates a previously trained traffic state prediction model on its
 It can be used to evaluate any model in the LibCity framework.
 """
 
+'''
+python evaluate_trained_model.py \
+  --model Mamba \
+  --dataset PEMSD8 \
+  --model_dir Mamba_PEMSD8_20250408_141451 \
+  --epoch 95 \
+  --evaluate_channels_separately
+'''
+
 import os
 import argparse
 import torch
@@ -22,7 +31,7 @@ from libcity.data import get_dataset
 def patch_model_for_checkpoint(model, model_name, checkpoint):
     """
     Patch the model's architecture parameters to match the checkpoint.
-    This is particularly important for models like MambaCoder where certain
+    This is particularly important for models like MCSTMamba where certain
     parameters are hardcoded.
     
     Args:
@@ -30,10 +39,10 @@ def patch_model_for_checkpoint(model, model_name, checkpoint):
         model_name: Name of the model class
         checkpoint: The loaded checkpoint
     """
-    if model_name != 'MambaCoder':
+    if model_name != 'MCSTMamba':
         return
     
-    # For MambaCoder, we need to update parameters
+    # For MCSTMamba, we need to update parameters
     try:
         # Try to extract key dimensions from checkpoint
         state_dict = checkpoint['model_state_dict']
@@ -76,7 +85,7 @@ def adapt_checkpoint_to_model(checkpoint, model_name):
     Returns:
         Modified checkpoint that should load correctly
     """
-    if model_name != 'MambaCoder':
+    if model_name != 'MCSTMamba':
         return checkpoint
     
     # Make a copy to avoid modifying the original
@@ -90,7 +99,7 @@ def adapt_checkpoint_to_model(checkpoint, model_name):
         else:
             checkpoint_copy[key] = checkpoint[key]
     
-    # Check for common MambaCoder issues
+    # Check for common MCSTMamba issues
     if 'model_state_dict' in checkpoint_copy:
         state_dict = checkpoint_copy['model_state_dict']
         modified = False
@@ -136,9 +145,9 @@ def load_model_safely(executor, model_path, epoch=None, model_name=None):
         if "size mismatch" in str(e):
             print("Detected size mismatch. Attempting to adapt checkpoint...")
             
-            # For MambaCoder specifically
-            if model_name == 'MambaCoder' or (hasattr(executor.model, '__class__') and 
-                                             executor.model.__class__.__name__ == 'MambaCoder'):
+            # For MCSTMamba specifically
+            if model_name == 'MCSTMamba' or (hasattr(executor.model, '__class__') and 
+                                             executor.model.__class__.__name__ == 'MCSTMamba'):
                 # Load the checkpoint
                 checkpoint = torch.load(model_path, map_location='cpu')
                 
@@ -306,7 +315,7 @@ def evaluate_single_channel(executor, test_dataloader, channel_idx, channel_name
     with torch.no_grad():
         executor.model.eval()
         
-        for batch in test_dataloader:
+        for batch_idx, batch in enumerate(test_dataloader):
             batch.to_tensor(executor.device)
             
             # Get predictions
@@ -319,7 +328,7 @@ def evaluate_single_channel(executor, test_dataloader, channel_idx, channel_name
             # Add to lists
             y_truths.append(y_true.cpu().numpy())
             y_preds.append(y_pred.cpu().numpy())
-    
+            
     # Concatenate results
     y_truths_concat = np.concatenate(y_truths, axis=0)
     y_preds_concat = np.concatenate(y_preds, axis=0)
@@ -435,8 +444,8 @@ def evaluate_model(task='traffic_state_pred', model_name=None, dataset_name=None
         for key, value in model_config.items():
             other_args[key] = value
         
-    elif model_name == 'MambaCoder':
-        # MambaCoder specific: Try to extract key architecture parameters from model state dict
+    elif model_name == 'MCSTMamba':
+        # MCSTMamba specific: Try to extract key architecture parameters from model state dict
         try:
             state_dict = checkpoint['model_state_dict']
             
@@ -458,13 +467,13 @@ def evaluate_model(task='traffic_state_pred', model_name=None, dataset_name=None
                 print(f"Extracted x_proj first dimension={x_proj_shape} from model weights")
                 print(f"Setting dt_size={x_proj_shape-6} to match the saved model")
                 
-                # If MambaCoder, we need explicit handling since the model has hardcoded values
+                # If MCSTMamba, we need explicit handling since the model has hardcoded values
                 # that might not match what's in the checkpoint
-                if model_name == 'MambaCoder':
+                if model_name == 'MCSTMamba':
                     # Add a marker to be checked in the model's __init__ method
                     # Since we can't modify the model code, we'll find another approach
                     # This may require updating the checkpoint itself
-                    print(f"For MambaCoder, explicitly specifying exact x_proj dimension: {x_proj_shape}")
+                    print(f"For MCSTMamba, explicitly specifying exact x_proj dimension: {x_proj_shape}")
                     other_args['x_proj_first_dim'] = x_proj_shape
             
         except Exception as e:
@@ -581,7 +590,7 @@ def evaluate_model(task='traffic_state_pred', model_name=None, dataset_name=None
             
             # Also run the standard evaluation on all channels
             logger.info("Evaluating all channels together (standard)...")
-            standard_results = executor.evaluate(test_data)
+            standard_results = evaluate_with_batch_timing(executor, test_data, logger)
             all_results["all_channels"] = standard_results
             
             # Save combined results
@@ -593,68 +602,13 @@ def evaluate_model(task='traffic_state_pred', model_name=None, dataset_name=None
             # Use standard results as the main results
             results = standard_results
         else:
-            # Standard evaluation (all channels together)
-            results = executor.evaluate(test_data)
+            # Standard evaluation (all channels together) with batch timing
+            results = evaluate_with_batch_timing(executor, test_data, logger)
         
-        # Generate additional visualizations
-        logger.info("Generating additional visualizations...")
-        try:
-            # Create separate visualization directories for each channel when evaluating separately
-            if evaluate_channels_separately:
-                channel_vis_dirs = {}
-                for channel in range(num_channels):
-                    channel_vis_dir = os.path.join(vis_dir, f'channel_{channel}')
-                    os.makedirs(channel_vis_dir, exist_ok=True)
-                    channel_vis_dirs[channel] = channel_vis_dir
-                    logger.info(f"Created visualization directory for channel {channel}: {channel_vis_dir}")
-            
-            # Get sample batches from test data
-            for batch_idx, batch in enumerate(test_data):
-                if batch_idx >= 5:  # Only do this for a few batches
-                    break
-                
-                # Get predictions for this batch
-                batch.to_tensor(executor.device)
-                output = executor.model.predict(batch)
-                
-                if evaluate_channels_separately:
-                    # Create visualizations for each channel separately
-                    for channel in range(num_channels):
-                        channel_y_true = executor._scaler.inverse_transform(batch['y'][..., channel:channel+1])
-                        channel_y_pred = executor._scaler.inverse_transform(output[..., channel:channel+1])
-                        
-                        # Generate a visualization filename for this channel
-                        channel_vis_filename = f"channel_{channel}_batch_{batch_idx}.png"
-                        
-                        # Create and save the visualization
-                        visualize_single_channel(
-                            channel_y_true, channel_y_pred, 
-                            channel_vis_dirs[channel], channel_vis_filename,
-                            f"Channel {channel}", batch_idx
-                        )
-                        logger.info(f"Generated visualization for channel {channel}, batch {batch_idx}")
-                else:
-                    # Standard visualization with all channels
-                    y_true = executor._scaler.inverse_transform(batch['y'][..., :executor.output_dim])
-                    y_pred = executor._scaler.inverse_transform(output[..., :executor.output_dim])
-                    
-                    # Explicitly save visualizations using the executor's method
-                    executor.visualize_predictions(y_true, y_pred, batch_idx)
-                    logger.info(f"Generated visualization for batch {batch_idx}")
-                
-            logger.info(f"Visualizations should be in {vis_dir}")
-            
-            # Create list of visualization files
-            vis_files = []
-            if os.path.exists(vis_dir):
-                vis_files = [f for f in os.listdir(vis_dir) if f.endswith('.png')]
-                logger.info(f"Found {len(vis_files)} visualization files in {vis_dir}")
-                for i, file in enumerate(vis_files[:5]):  # Show first 5 files
-                    logger.info(f"  {i+1}. {file}")
-            else:
-                logger.warning(f"Visualization directory {vis_dir} does not exist")
-        except Exception as e:
-            logger.error(f"Error generating visualizations: {e}")
+        # End timing the evaluation process
+        eval_end_time = time.time()
+        eval_duration = eval_end_time - eval_start_time
+        logger.info(f"Evaluation completed in {eval_duration:.2f} seconds")
         
         # Log the results
         logger.info("Evaluation complete!")
@@ -839,7 +793,7 @@ if __name__ == '__main__':
     parser.add_argument('--task', type=str, default='traffic_state_pred', 
                         help='Task name (default: traffic_state_pred)')
     parser.add_argument('--model', type=str, required=True,
-                        help='Model name, e.g., MambaCoder')
+                        help='Model name, e.g., MCSTMamba')
     parser.add_argument('--dataset', type=str, required=True,
                         help='Dataset name, e.g., PEMSD8')
     parser.add_argument('--model_dir', type=str, required=True,
@@ -855,7 +809,7 @@ if __name__ == '__main__':
     parser.add_argument('--metrics', type=str, default=None,
                         help='Comma-separated list of metrics to use (default: None, uses config file metrics)')
     
-    # MambaCoder-specific parameters (can be auto-detected from checkpoint)
+    # MCSTMamba-specific parameters (can be auto-detected from checkpoint)
     parser.add_argument('--d_state', type=int, default=None,
                        help='State dimension for Mamba models')
     parser.add_argument('--d_conv', type=int, default=None,

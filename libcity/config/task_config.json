@@ -179,7 +179,7 @@
             "ASTGNNCommon",
             "FreTS",
             "Mamba",
-            "MambaCoder"
+            "MCSTMamba"
         ],
         "allowed_dataset": [
             "METR_LA",
