@@ -71,6 +71,7 @@ python evaluate_trained_model.py \
   --model_dir MCSTMamba_PEMSD8_20241201_120000 \
   --epoch 95 \
   --evaluate_channels_separately
+```
 
 
 ## 📁 Project Structure
