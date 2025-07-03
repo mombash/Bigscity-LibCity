@@ -1,19 +1,18 @@
 {
   "max_epoch": 300,
-
   "learner": "adam",
   "learning_rate": 0.001,
   "lr_epsilon": 1e-8,
   "weight_decay": 0.0001,
-
   "lr_decay": true,
   "lr_scheduler": "multisteplr",
   "lr_decay_ratio": 0.1,
-  "steps": [10,30],
-
+  "steps": [
+    10,
+    30
+  ],
   "use_early_stop": true,
   "patience": 20,
-
   "steps_per_day": 288,
   "input_dim": 3,
   "output_dim": 1,
@@ -25,5 +24,7 @@
   "feed_forward_dim": 256,
   "num_heads": 4,
   "num_layers": 3,
-  "dropout": 0.1
+  "dropout": 0.1,
+  "input_window": 288,
+  "output_window": 288
 }

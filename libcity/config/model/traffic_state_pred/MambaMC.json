@@ -23,5 +23,18 @@
     "add_time_in_day": true,
     "add_day_in_week": true,
     "steps_per_day": 288,
-    "dropout": 0.1
+    "dropout": 0.1,
+    "dt_rank": 16,
+    "d_ff": 192,
+    "bias": true,
+    "dt_min": 0.001,
+    "dt_max": 0.1,
+    "dt_init": "random",
+    "dt_scale": 1.0,
+    "dt_init_floor": 0.0001,
+    "pscan": true,
+    "gddmlp": true,
+    "reduction": 2,
+    "avg_flag": true,
+    "max_flag": true
 }

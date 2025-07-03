@@ -25,25 +25,29 @@ from libcity.model.traffic_speed_prediction.STAEformer import STAEformer
 from libcity.model.traffic_speed_prediction.TESTAM import TESTAM
 from libcity.model.traffic_speed_prediction.MegaCRN import MegaCRN
 from libcity.model.traffic_speed_prediction.Mamba import Mamba
-from libcity.model.traffic_speed_prediction.MCSTMamba import MCSTMamba
+from libcity.model.traffic_speed_prediction.MambaCoder import MambaCoder
 from libcity.model.traffic_speed_prediction.MambaGF import MambaGF
+from libcity.model.traffic_speed_prediction.MambaRegMean import MambaRegMean
+from libcity.model.traffic_speed_prediction.MambaCross import MambaCross
+from libcity.model.traffic_speed_prediction.MambaFisher import MambaFisher
+from libcity.model.traffic_speed_prediction.MambaMC import MambaMC
 
 __all__ = [
     "DCRNN",
     "STGCN",
     "GWNET",
+    "MTGNN",
     "TGCLSTM",
     "TGCN",
-    "TemplateTSP",
     "RNN",
     "Seq2Seq",
     "AutoEncoder",
-    "MTGNN",
+    "TemplateTSP",
     "ATDM",
     "GMAN",
+    "STAGGCN",
     "GTS",
     "HGCN",
-    "STAGGCN",
     "STMGAT",
     "DKFN",
     "STTN",
@@ -56,5 +60,10 @@ __all__ = [
     "TESTAM",
     "MegaCRN",
     "Mamba",
+    "MambaGF",
+    "MambaRegMean",
+    "MambaCross",
+    "MambaFisher",
+    "MambaMC",
     "MCSTMamba"
 ]
