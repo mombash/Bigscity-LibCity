@@ -1,6 +1,5 @@
 # MCST-Mamba: Multi-Channel Spatio-Temporal Mamba for Traffic Prediction
 
-[![Python](https://img.shields.io/badge/Python-3.7%2B-blue)](https://www.python.org/) [![Pytorch](https://img.shields.io/badge/Pytorch-1.7.1%2B-blue)](https://pytorch.org/) [![License](https://img.shields.io/badge/License-Apache%202.0-blue)](./LICENSE.txt)
 
 This repository contains the official implementation of **MCST-Mamba**, a novel traffic prediction model that simultaneously forecasts multiple traffic features (speed, flow, occupancy) using Mamba state space models. This work extends the [LibCity](https://github.com/LibCity/Bigscity-LibCity) benchmarking framework.
 
@@ -18,7 +17,7 @@ MCST-Mamba addresses the challenge of predicting multiple interrelated traffic m
 ### 1. Installation
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/mombash/MCST-Mamba.git
 cd Bigscity-LibCity
 pip install -r requirements.txt
 ```
