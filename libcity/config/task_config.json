@@ -179,6 +179,11 @@
             "ASTGNNCommon",
             "FreTS",
             "Mamba",
+            "MambaGF",
+            "MambaRegMean",
+            "MambaCross",
+            "MambaFisher",
+            "MambaMC",
             "MCSTMamba"
         ],
         "allowed_dataset": [
