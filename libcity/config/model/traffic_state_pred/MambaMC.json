@@ -1,4 +1,8 @@
 {
+    "model": "MambaMC",
+    "task": "traffic_state_pred",
+    "dataset_class": "TrafficStatePointDataset",
+    "evaluator": "TrafficStateEvaluator",
     "d_model": 96,
     "d_state": 96,
     "d_conv": 4,
