@@ -111,7 +111,7 @@ For now, please cite the original LibCity framework:
 
 ## 🐛 Issues
 
-- Report bugs and request features via [GitHub Issues](https://github.com/your-repo/issues)
+- Report bugs and request features via [Our Issues Page](https://github.com/mombash/MCST-Mamba/issues) 
 - For questions about MCST-Mamba, open an issue with the `[MCST-Mamba]` tag
 
 ---
